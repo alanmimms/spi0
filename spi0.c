@@ -438,15 +438,34 @@ static char *formatList(struct FormattableListElement elems[]) {
 // Convert hex digit millivolts to floating point volts (as in VCC
 // Supply Maximum/Minimum Voltage values in Macronix Flash parameter
 // table from RDSFDP data.
-static float hexMVtoV(u16 hex) {
-  float v = 0.0;
-  for (int k = 0; k < 16; k += 4) v = v * 10 + (float) ((hex >> k) & 0x0F);
-  return v;
+static float hexMVtoV(u16 v) {
+  return
+    1.0 * ((v >> 12) & 0x0F) +
+    0.1 * ((v >> 8) & 0x0F) +
+    0.01 * ((v >> 4) & 0x0F) +
+    0.001 * ((v >> 0) & 0x0F);
 }
 
 
-static void formatFastRead(char *nameP, u8 ws, u8 bits, u8 opcode) {
-  fprintf(stderr, "JEDEC fast read %s: %d wait states, mode bits %ssupported, %02X opcode\n", ws, bits ? "" : "not ", opcode);
+struct FastRead {
+  u8 ws;
+  u8 modeBits;
+  u8 opcode;
+};
+
+
+static u8 *getFastRead(char *nameP, struct FastRead *frP, u8 *p) {
+  u8 b = GET1(p);
+  frP->ws = b & 0x1F;
+  frP->modeBits = b >> 5;
+  frP->opcode = GET1(p);
+  return p;
+}
+
+
+static void formatFastRead(char *nameP, struct FastRead *frP) {
+  fprintf(stderr, "JEDEC fast read %s: %d wait states, mode bits %ssupported, %02X opcode\n",
+          nameP, frP->ws, frP->modeBits ? "" : "not ", frP->opcode);
 }
 
 
@@ -510,57 +529,38 @@ static void displayDeviceInfo(void) {
   (void) GET1(p);               /* Unused 33 */
   u32 density = GET4(p);
 
-  u8 b38 = GET1(p);
-  u8 fastRead144WS = b38 & 0x1F;
-  u8 fastRead144ModeBits = b32 >> 5;
+  struct FastRead fastRead144, fastRead114, fastRead112, fastRead122, fastRead222, fastRead444;
+  p = getFastRead("1-4-4", &fastRead144, p);
+  p = getFastRead("1-1-4", &fastRead114, p);
+  p = getFastRead("1-1-2", &fastRead112, p);
+  p = getFastRead("1-2-2", &fastRead122, p);
 
-  u8 fastRead144Opcode = GET1(p);
-
-  u8 b3a;
-  u8 fastRead114WS = b3a & 0x1F;
-  u8 fastRead114ModeBits = b3a >> 5;
-  u8 fastRead114Opcode = GET1(p);
-
-  u8 b3c;
-  u8 fastRead112WS = b3c & 0x1F;
-  u8 fastRead112ModeBits = b3c >> 5;
-  u8 fastRead112Opcode = GET1(p);
-
-  u8 b3e;
-  u8 fastRead122WS = b3e & 0x1F;
-  u8 fastRead122ModeBits = b3e >> 5;
-  u8 fastRead122Opcode = GET1(p);
-
+  CHECKOFFSET(0x40);
   u8 b40 = GET1(p);
   u8 fastRead222Supported = b40 & 1;
   u8 fastRead444Supported = (b40 >> 4) & 1;
   (void) GET3(p);               /* Unused 41-43 */
   (void) GET2(p);               /* Unused 44-45 */
 
-  u8 b46;
-  u8 fastRead222WS = b46 & 0x1F;
-  u8 fastRead222ModeBits = b46 >> 5;
-  u8 fastRead222Opcode = GET1(p);
+  CHECKOFFSET(0x46);
+  p = getFastRead("2-2-2", &fastRead222, p);
   (void) GET2(p);               /* Unused 48-49 */
+  p = getFastRead("4-4-4", &fastRead444, p);
 
-  u8 b4a;
-  u8 fastRead444WS = b4a & 0x1F;
-  u8 fastRead444ModeBits = b4a >> 5;
-  u8 fastRead444Opcode = GET1(p);
-
-  u8 b4c;
+  CHECKOFFSET(0x4C);
+  u8 b4c = GET1(p);
   u32 secType1Size = b4c ? 1u << b4c : 0;
   u8 secType1EraseOpcode = GET1(p);
 
-  u8 b4e;
+  u8 b4e = GET1(p);
   u32 secType2Size = b4e ? 1u << b4e : 0;
   u8 secType2EraseOpcode = GET1(p);
 
-  u8 b50;
+  u8 b50 = GET1(p);
   u32 secType3Size = b50 ? 1u << b50 : 0;
   u8 secType3EraseOpcode = GET1(p);
 
-  u8 b52;
+  u8 b52 = GET1(p);
   u32 secType4Size = b52 ? 1u << b52 : 0;
   u8 secType4EraseOpcode = GET1(p);
 
@@ -617,12 +617,12 @@ static void displayDeviceInfo(void) {
                    {"3BA", address3ByteSupported},
                    {"4BA", address4ByteSupported}));
     fprintf(stderr, "JEDEC flash memory density %08X (%gMb)\n", density, (float) (density+1) / 1024.0/1024.0);
-    formatFastRead("1-4-4", fastRead144WS, fastRead144ModeBits, fastRead144Opcode);
-    formatFastRead("1-1-4", fastRead114WS, fastRead114ModeBits, fastRead114Opcode);
-    formatFastRead("1-1-2", fastRead112WS, fastRead112ModeBits, fastRead112Opcode);
-    formatFastRead("1-2-2", fastRead122WS, fastRead122ModeBits, fastRead122Opcode);
-    formatFastRead("2-2-2", fastRead222WS, fastRead222ModeBits, fastRead222Opcode);
-    formatFastRead("4-4-4", fastRead444WS, fastRead444ModeBits, fastRead444Opcode);
+    formatFastRead("1-4-4", &fastRead144);
+    formatFastRead("1-1-4", &fastRead114);
+    formatFastRead("1-1-2", &fastRead112);
+    formatFastRead("1-2-2", &fastRead122);
+    formatFastRead("2-2-2", &fastRead222);
+    formatFastRead("4-4-4", &fastRead444);
 
     fprintf(stderr, "JEDEC Sector Type 1 size %08X opcode %02X\n", secType1Size, secType1EraseOpcode);
     fprintf(stderr, "JEDEC Sector Type 2 size %08X opcode %02X\n", secType2Size, secType2EraseOpcode);
@@ -631,7 +631,7 @@ static void displayDeviceInfo(void) {
 
     // Macronix parameter table
     fprintf(stderr, "\n");
-    fprintf(stderr, "Vendor VCC range %f..%f\n", vccMin, vccMax);
+    fprintf(stderr, "Vendor VCC range %.2fV to %.2fV\n", vccMin, vccMax);
 
 #if 0
     u16 b6564 = GET2(p);
