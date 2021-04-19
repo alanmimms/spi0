@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <assert.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -76,6 +77,10 @@ static int verbose;
 static int doNothing;
 
 
+// Speed of SPI bus in Hz
+static u32 spiSpeed = 1*1000*1000;
+
+
 // File descriptor for the specified device.
 static int spiFD = -1;
 
@@ -85,7 +90,7 @@ static int spiFD = -1;
 
 
 // I/O buffer we use for SPI interactions.
-static char ioBuf[MAX_BUF_SIZE];
+static u8 ioBuf[MAX_BUF_SIZE/2];
 
 
 // Maximal operation parameter list. Use what you need from here and add more when needed.
@@ -266,7 +271,7 @@ static void parseCommandLine(int argc, char *argv[]) {
       break;
 
     case SpeedOp:
-      op->speed = strtoul(*argv++, NULL, 10); --argc;
+      spiSpeed = op->speed = strtoul(*argv++, NULL, 10); --argc;
       break;
 
     case IdentifyOp:
@@ -341,16 +346,20 @@ static void displayOp(struct Op *op) {
 
 // Send the specified SPI command to the device and read up to
 // `respBufLen` bytes as a response, returning the actual read length
-// or negative if error.
+// or negative if error. If `respBufLen` is zero the operation sends
+// data but doesn't expect a reply.
 static int commandAndResponse(u8 *cmdBufP, u32 cmdLen, u8 *respBufP, u32 respBufLen) {
   struct spi_ioc_transfer msg[2];
   int st;
 
+  bzero(msg, sizeof(msg));
   msg[0].tx_buf = (u64)cmdBufP;
   msg[0].len = cmdLen;
+  msg[0].speed_hz = spiSpeed;
 
   msg[1].rx_buf = (u64)respBufP;
   msg[1].len = respBufLen;
+  msg[1].speed_hz = spiSpeed;
 
   st = ioctl(spiFD, respBufLen ? SPI_IOC_MESSAGE(2) : SPI_IOC_MESSAGE(1), msg);
   CHECKST(st, "commandAndResponse ioctl");
@@ -358,21 +367,71 @@ static int commandAndResponse(u8 *cmdBufP, u32 cmdLen, u8 *respBufP, u32 respBuf
 }
 
 
+// Like strcat(destP, toAppendP) except it returns the pointer to the
+// NUL it sticks onto the end of the destination string so you can
+// continue appending there.
+static char *strappend(char *destP, char *toAppendP) {
+  return strcat(destP, toAppendP) + strlen(toAppendP);
+}
+
+
+// Dump the specified byte array in hex in "standard" format.
+#define DUMP_LINE_BYTES 16
+static void dumpHex(u8 *bufP, u32 size) {
+
+  for (int k = 0; k < size; ++k) {
+    if (k % DUMP_LINE_BYTES == 0) fprintf(stderr, "%s%06X:", k > 0 ? "\n" : "", k);
+    fprintf(stderr, " %02X", bufP[k]);
+  }
+
+  fprintf(stderr, "\n");
+}
+
+
+struct FormattableListElement {
+  char *descP;
+  int flag;
+};
+
+
+// For each element append the description string if the flag is true.
+// All appended items in the list are separated by "," as in normal
+// English usage.
+static char *formatList(struct FormattableListElement elems[]) {
+  static char formatBuf[4096];
+  char *p = formatBuf;
+  *p = 0;
+
+  for (int k = 0; elems[k].descP; ++k) {
+
+    if (elems[k].flag) {
+      if (p != formatBuf) p = strappend(p, ", ");
+      p = strappend(p, elems[k].descP);
+    }
+  }
+
+  return formatBuf;
+}
+
+
+#define MKLIST(L...)       formatList((struct FormattableListElement []) {L, {NULL, 0}})
+
+
 #define GET1(P)  (*(P)++)
 
 #define GET2(P)  ({ u16 _v = *(P)++;            \
-    _v |= (u16) *(P)++ << 8;                  \
+    _v |= (u16) *(P)++ << 8;                    \
   })
 
 #define GET3(P)  ({ u32 _v = *(P)++;            \
-    _v |= (u32) *(P)++ << 8;                  \
-    _v |= (u32) *(P)++ << 16;                 \
+    _v |= (u32) *(P)++ << 8;                    \
+    _v |= (u32) *(P)++ << 16;                   \
   })
 
 #define GET4(P)  ({ u32 _v = *(P)++;            \
-    _v |= (u32) *(P)++ << 8;                  \
-    _v |= (u32) *(P)++ << 16;                 \
-    _v |= (u32) *(P)++ << 24;                 \
+    _v |= (u32) *(P)++ << 8;                    \
+    _v |= (u32) *(P)++ << 16;                   \
+    _v |= (u32) *(P)++ << 24;                   \
   })
 
 
@@ -386,14 +445,33 @@ static float hexMVtoV(u16 hex) {
 }
 
 
+static void formatFastRead(char *nameP, u8 ws, u8 bits, u8 opcode) {
+  fprintf(stderr, "JEDEC fast read %s: %d wait states, mode bits %ssupported, %02X opcode\n", ws, bits ? "" : "not ", opcode);
+}
+
+
+// Dump the contents of a JEDEC standard parameter table header at `p`.
+static void dumpParamHeader(u8 *p, int n) {
+  u8 id = GET1(p);
+  u8 minor = GET1(p);
+  u8 major = GET1(p);
+  u8 length = GET1(p);
+  u32 ptp = GET3(p);
+  fprintf(stderr, "Parameter table #%d id %02X (%02X.%02X) %02X dwords at offset %06X\n", n, id, major, minor, length, ptp);
+}
+
+
 static void displayDeviceInfo(void) {
   u8 *p = ioBuf;
+#define CHECKOFFSET(SB) assert(p - ioBuf == (SB))
 
   u32 signature = GET4(p);
   u8 minorRev = GET1(p);
   u8 majorRev = GET1(p);
+  u8 nParamHeaders = GET1(p) + 1;
   (void) GET1(p);               /* Unused 07 */
 
+  CHECKOFFSET(0x08);
   u8 jedecID = GET1(p);
   u8 jptMinorRev = GET1(p);
   u8 jptMajorRev = GET1(p);
@@ -401,6 +479,7 @@ static void displayDeviceInfo(void) {
   u32 jptPtr = GET3(p);
   (void) GET1(p);               /* Unused 0F */
 
+  CHECKOFFSET(0x10);
   u8 mfgID = GET1(p);
   u8 mptMinorRev = GET1(p);
   u8 mptMajorRev = GET1(p);
@@ -409,6 +488,8 @@ static void displayDeviceInfo(void) {
   (void) GET1(p);               /* Unused 17 */
 
   // JEDEC parameter table
+  p = ioBuf + jptPtr;
+  CHECKOFFSET(jptPtr);
   u8 b30 = GET1(p);
   u8 support4KErase = (b30 & 3) == 1;
   u8 writeGranularityGE64B = (b30 >> 2) & 1;
@@ -482,21 +563,10 @@ static void displayDeviceInfo(void) {
   u8 b52;
   u32 secType4Size = b52 ? 1u << b52 : 0;
   u8 secType4EraseOpcode = GET1(p);
-  (void) GET1(p);               /* Unused 53 */
-  (void) GET1(p);               /* Unused 54 */
-  (void) GET1(p);               /* Unused 55 */
-  (void) GET1(p);               /* Unused 56 */
-  (void) GET1(p);               /* Unused 57 */
-  (void) GET1(p);               /* Unused 58 */
-  (void) GET1(p);               /* Unused 59 */
-  (void) GET1(p);               /* Unused 5A */
-  (void) GET1(p);               /* Unused 5B */
-  (void) GET1(p);               /* Unused 5C */
-  (void) GET1(p);               /* Unused 5D */
-  (void) GET1(p);               /* Unused 5E */
-  (void) GET1(p);               /* Unused 5F */
 
   // Macronix parameter table
+  p = ioBuf + mptPtr;
+  CHECKOFFSET(mptPtr);
   float vccMax = hexMVtoV(GET2(p));
   float vccMin = hexMVtoV(GET2(p));
 
@@ -527,6 +597,70 @@ static void displayDeviceInfo(void) {
   (void) GET4(p);               /* Unused 6C-6F */
 
   if (verbose) {
+    fprintf(stderr, "\n");
+    dumpHex(ioBuf, 512);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "SFDP %02X.%02X signature=%08X with %d parameter headers\n", majorRev, minorRev, signature, nParamHeaders);
+    for (int ptn = 0; ptn < nParamHeaders; ++ptn) dumpParamHeader(ioBuf + 8 + ptn * 8, ptn);
+
+    fprintf(stderr, "\n");
+    fprintf(stderr, "JEDEC block/sector 4KB erase %ssupported\n", support4KErase ? "" : "not ");
+    fprintf(stderr, "JEDEC write granularity %s\n", writeGranularityGE64B ? ">= 64B:" : "1B");
+    fprintf(stderr, "JEDEC volatile WE opcode to write volatile SRs is %s\n",
+            volatileSRWERequired ? (volatileSRWEOpcode ? "06" : "50") : "not required");
+    fprintf(stderr, "JEDEC 4KB Erase opcode %02X\n", erase4KOpcode);
+    fprintf(stderr, "JEDEC support for %s\n",
+            MKLIST({"1-1-2 fast read", fastRead112Support},
+                   {"1-1-4 fast read", fastRead114Support},
+                   {"1-2-2 fast read", fastRead122Support},
+                   {"1-4-4 fast read", fastRead144Support},
+                   {"3BA", address3ByteSupported},
+                   {"4BA", address4ByteSupported}));
+    fprintf(stderr, "JEDEC flash memory density %08X (%gMb)\n", density, (float) (density+1) / 1024.0/1024.0);
+    formatFastRead("1-4-4", fastRead144WS, fastRead144ModeBits, fastRead144Opcode);
+    formatFastRead("1-1-4", fastRead114WS, fastRead114ModeBits, fastRead114Opcode);
+    formatFastRead("1-1-2", fastRead112WS, fastRead112ModeBits, fastRead112Opcode);
+    formatFastRead("1-2-2", fastRead122WS, fastRead122ModeBits, fastRead122Opcode);
+    formatFastRead("2-2-2", fastRead222WS, fastRead222ModeBits, fastRead222Opcode);
+    formatFastRead("4-4-4", fastRead444WS, fastRead444ModeBits, fastRead444Opcode);
+
+    fprintf(stderr, "JEDEC Sector Type 1 size %08X opcode %02X\n", secType1Size, secType1EraseOpcode);
+    fprintf(stderr, "JEDEC Sector Type 2 size %08X opcode %02X\n", secType2Size, secType2EraseOpcode);
+    fprintf(stderr, "JEDEC Sector Type 3 size %08X opcode %02X\n", secType3Size, secType3EraseOpcode);
+    fprintf(stderr, "JEDEC Sector Type 4 size %08X opcode %02X\n", secType4Size, secType4EraseOpcode);
+
+    // Macronix parameter table
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Vendor VCC range %f..%f\n", vccMin, vccMax);
+
+#if 0
+    u16 b6564 = GET2(p);
+    u8 hwResetPin = b6564 & 1;
+    u8 hwHoldPin = (b6564 >> 1) & 1;
+    u8 deepPowerDownSupported = (b6564 >> 2) & 1;
+    u8 swResetSupported = (b6564 >> 3) & 1;
+    u8 swResetOpcode = (b6564 >> 4) & 0xFF;
+    u8 programSuspendResumeSupported = (b6564 >> 12) & 1;
+    u8 EraseSuspendResumeSupported = (b6564 >> 13) & 1;
+    u8 wrapAroundReadModeSupported = (b6564 >> 15) & 1;
+    u8 wrapAroundReadModeOpcode = GET1(p);
+
+    u8 b64 = GET1(p);
+    u8 wrapAroundRead8Supported = b64 == 0x08 || b64 == 0x16 || b64 == 0x32 || b64 == 0x64;
+    u8 wrapAroundRead16Supported = b64 == 0x16 || b64 == 0x32 || b64 == 0x64;
+    u8 wrapAroundRead32Supported = b64 == 0x32 || b64 == 0x64;
+    u8 wrapAroundRead64Supported = b64 == 0x64;
+
+    u16 b6b68 = GET2(p);
+    u8 individualBlockLockSupported = b6b68 & 1;
+    u8 individualBlockLockNonvolatile = (b6b68 >> 1) & 1;
+    u8 individualBlockLockOpcode = (b6b68 >> 2) & 0xFF;
+    u8 securedOTPSupported = (b6b68 >> 11) & 1;
+    u8 readLockSupported = (b6b68 >> 12) & 1;
+    u8 permanentLockSupported = (b6b68 >> 13) & 1;
+    (void) GET4(p);               /* Unused 6C-6F */
+#endif
+
   }
 
   fprintf(stderr, "\n");
@@ -541,6 +675,11 @@ static void executeOperations(void) {
       0,       /* 8b dummy */
   };
 
+  u8 mode = SPI_MODE_0;
+  u8 bits = 8;
+
+  CHECKST(ioctl(spiFD, SPI_IOC_WR_MODE, &mode), "ioctl SPI_IOC_WR_MODE");
+  CHECKST(ioctl(spiFD, SPI_IOC_WR_BITS_PER_WORD, &bits), "ioctl SPI_IOC_WR_BITS_PER_WORD");
 
   for (int k = 0; k < nOps; ++k) {
     struct Op *op = &opsP[k];
@@ -551,6 +690,7 @@ static void executeOperations(void) {
     switch (op->op) {
     case SpeedOp:
       CHECKST(ioctl(spiFD, SPI_IOC_WR_MAX_SPEED_HZ, &op->speed), "ioctl SPI_IOC_WR_MAX_SPEED_HZ");
+      spiSpeed = op->speed;
       break;
 
     case IdentifyOp:
