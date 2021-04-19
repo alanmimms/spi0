@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <linux/types.h>
 #include <linux/spi/spidev.h>
@@ -22,9 +24,9 @@ typedef signed long long s64;
 #define NELEM(A)        (sizeof(A)/sizeof(A[0]))
 
 
-typedef enum {EraseOp, WriteOp, VerifyOp, ReadOp, HelpOp, DeviceOp} OpType;
 #define DEFOPTS                                                                                           \
   DEF1OPT("h", "help",    "                     | This help.", HelpOp)                                    \
+  DEF1OPT("v", "verbose", "                     | Verbosely explain operations as they progress.", VerboseOp) \
   DEF1OPT("d", "device",  "pathname             | /dev/spidevX.Y device pathname", DeviceOp)              \
   DEF1OPT("E", "erase",   "base size            | Erase device range", EraseOp)                           \
   DEF1OPT("W", "write",   "filename base        | Write file to device at base", WriteOp)                 \
@@ -32,6 +34,12 @@ typedef enum {EraseOp, WriteOp, VerifyOp, ReadOp, HelpOp, DeviceOp} OpType;
   DEF1OPT("R", "read",    "filename base size   | Read device content to file", ReadOp)
 
   
+// Define an enum for our OPTYPE names
+#define DEF1OPT(SOPT, LOPT, HELP, OPTYPE) OPTYPE,
+typedef enum {DEFOPTS} OpType;
+#undef DEF1OPT
+
+
 #define DEF1OPT(SOPT, LOPT, HELP, OPTYPE) {SOPT, LOPT, HELP, OPTYPE},
 static struct {
   char *sopt;
@@ -52,6 +60,9 @@ static const unsigned NOPTS = 0 DEFOPTS;
 // Our program name from our command line.
 static char *progName;
 
+// Our verbosity level
+static int verbose;
+
 
 // File descriptor for the specified device.
 static int spiFD = -1;
@@ -68,42 +79,21 @@ static const u8 jedecSFDP[] = {
 };
 
 
-// All of these XxxOp structs must start with an `op` member which is
-// then followed by the op-specific parameters.
-struct EraseOp {
+// Maximal operation parameter list. Use what you need from here and add more when needed.
+struct Op {
   OpType op;
+  char *nameP;                  /* Name of file */
+  u8 *imageP;                   /* Actual CONTENT of file */
   u32 base;                     /* Base offset in device to erase */
   u32 size;                     /* Size to erase */
 };
 
 
-struct WriteOp {
-  OpType op;
-  u8 *imageP;                   /* Actual CONTENT of file */
-  u32 size;                     /* Size of file */
-};
-
-
-struct VerifyOp {
-  OpType op;
-  u8 *imageP;                   /* Actual CONTENT of file */
-  u32 size;                     /* Size of file */
-};
-
-struct ReadOp {
-  OpType op;
-  char *fileNameP;              /* Name of file */
-  u32 base;                     /* Base offset in device to read image from */
-  u32 size;                     /* Size to read */
-};
-
 
 // For each operation we're asked to do there is an element in this
 // array.
 static unsigned nOps = 0;
-static struct AnyOp {
-  OpType op;
-} **ops;
+static struct Op *opsP = 0;     /* Array of Op structures for each operation to be done */
 
 
 // Send the specified SPI command to the device and read up to
@@ -156,6 +146,24 @@ static void usage(char *fmtP, char *p1) {
 }
 
 
+// Read the contents of the specified file into a newly allocated
+// dyanmic buffer and return it and its size is optionally returned
+// via sizeP;
+static u8 *readFile(char *fileNameP, u32 *sizeP) {
+  struct stat statbuf;
+  u8 *bufP = 0;
+  int st;
+
+  st = lstat(fileNameP, &statbuf);
+  if (st < 0) usage("Unable to determine size of '%s'", fileNameP);
+  bufP = (u8 *) malloc(statbuf.st_size);
+  if (!bufP) usage("Unable to allocate space for content of '%s'", fileNameP);
+  if (sizeP) *sizeP = statbuf.st_size;
+  return bufP;
+}
+
+
+
 static void checkDev() {
   if (spiFD <= 0) usage("The -d or --device command line option is REQUIRED before any device operations.", NULL);
 }
@@ -190,9 +198,7 @@ static u32 htoi(char *hexP) {
 static void parseCommandLine(int argc, char *argv[]) {
   int k = 0;
   char *curOpt;
-  char *nameP;
-  u32 base;
-  u32 size;
+  struct Op *op;
 
   // Parse our command line parameters
   while (argc > 0) {
@@ -203,14 +209,14 @@ static void parseCommandLine(int argc, char *argv[]) {
         if (strcmp(options[k].lopt, argv[0] + 2) == 0) goto GotOption;
       }
 
-      usage("Unknown long option '--%s'", argv[0]); 
+      usage("Unknown long option '%s'", *argv); 
     } else if (argv[0][0] == '-') {               /* Short option */
 
       for (k = 0; k < NOPTS; ++k) {
         if (strcmp(options[k].sopt, argv[0] + 1) == 0) goto GotOption;
       }
 
-      usage("Unknown short option '-%s'", argv[0]); 
+      usage("Unknown short option '%s'", *argv); 
     } else {                                      /* Invalid command line option */
       usage("Bad option '%s'", argv[0]);
     }
@@ -220,46 +226,61 @@ static void parseCommandLine(int argc, char *argv[]) {
     /* Consume option name argv element but note it for error messages */
     curOpt = *argv++; --argc;
 
+    // Make room on the end for a new operation element (works if ops is initially null).
+    opsP = (struct Op *) realloc(opsP, ++nOps * sizeof(*opsP));
+    if (!opsP) usage("Cannot allocate enough space for the requested list of operations", curOpt);
+
+    op = opsP + nOps - 1;        /* Point at the new element */
+    // Intially zero the new element
+    bzero(op, sizeof(*op));
+    op->op = options[k].op;      /* Note its operation type */
+
     switch (options[k].op) {
       //  DEF1OPT("h", "help", "This help", HelpOp)
     case HelpOp:
       usage(NULL, NULL);
       break;
 
+    case VerboseOp:
+      ++verbose;
+      break;
+
       //  DEF1OPT("d", "device", "/dev/spidevX.Y device pathname", DeviceOp)
     case DeviceOp:
-      nameP = *argv++; --argc;
-      spiFD = open(nameP, O_RDWR);
-      if (spiFD < 0) usage("Unable to open device '%s' for read/write", nameP);
+      op->nameP = *argv++; --argc;
+      spiFD = open(op->nameP, O_RDWR);
+      if (spiFD < 0) usage("Unable to open device '%s' for read/write", op->nameP);
       break;
 
       //  DEF1OPT("E", "erase", "Erase device range (base,size in hex)", EraseOp)
     case EraseOp:
       checkDev();
-      CHECK_MORE(); base = htoi(*argv++); --argc;
-      CHECK_MORE(); size = htoi(*argv++); --argc;
+      CHECK_MORE(); op->base = htoi(*argv++); --argc;
+      CHECK_MORE(); op->size = htoi(*argv++); --argc;
       break;
 
       //  DEF1OPT("W", "write", "Write file to device at base (file,base in hex)", WriteOp)
     case WriteOp:
       checkDev();
-      CHECK_MORE(); nameP = *argv++; --argc;
-      CHECK_MORE(); base = htoi(*argv++); --argc;
+      CHECK_MORE(); op->nameP = *argv++; --argc;
+      op->imageP = readFile(op->nameP, &op->size);
+      CHECK_MORE(); op->base = htoi(*argv++); --argc;
       break;
 
       //  DEF1OPT("R", "read", "Read device range to file (file,base,size in hex)", ReadOp)
     case ReadOp:
       checkDev();
-      CHECK_MORE(); nameP = *argv++; --argc;
-      CHECK_MORE(); base = htoi(*argv++); --argc;
-      CHECK_MORE(); size = htoi(*argv++); --argc;
+      CHECK_MORE(); op->nameP = *argv++; --argc;
+      CHECK_MORE(); op->base = htoi(*argv++); --argc;
+      CHECK_MORE(); op->size = htoi(*argv++); --argc;
       break;
 
       //  DEF1OPT("V", "verify", "Verify device contains file content at base (file,base in hex)", VerifyOp)
     case VerifyOp:
       checkDev();
-      CHECK_MORE(); nameP = *argv++; --argc;
-      CHECK_MORE(); base = htoi(*argv++); --argc;
+      CHECK_MORE(); op->nameP = *argv++; --argc;
+      op->imageP = readFile(op->nameP, &op->size);
+      CHECK_MORE(); op->base = htoi(*argv++); --argc;
       break;
 
     default:
@@ -270,10 +291,34 @@ static void parseCommandLine(int argc, char *argv[]) {
 }
 
 
+static char *opToName(OpType op) {
+
+  for (int n = 0; n < NOPTS; ++n) {
+    if (options[n].op == op) return options[n].lopt;
+  }
+
+  return "??? unknown op ???";
+}
+
+
 
 int main(int argc, char *argv[]) {
   progName = *argv++;
   --argc;
   parseCommandLine(argc, argv);
+
+  if (verbose) {
+
+    for (int k; k < nOps; ++k) {
+      struct Op *op = &opsP[k];
+
+      fprintf(stderr, "%-10s: base=%08X  size=%08X  file='%s'\n",
+              opToName(op->op),
+              op->base,
+              op->size,
+              op->nameP ? op->nameP : "");
+    }
+  }
+
   return 0;
 }
