@@ -670,9 +670,9 @@ static void displayDeviceInfo(void) {
 
 static void executeOperations(void) {
   static u8 jedecSFDP[] = {
-      0x5A, /* JEDEC READ SFDP command */
-      0, 0, 0, /* 24b address */
-      0,       /* 8b dummy */
+      0x5A,            /* JEDEC READ SFDP command */
+      0x98, 0, 0,      /* 24b address (specified by JEDEC JESD6801) */
+      0,               /* 8b dummy */
   };
 
   u8 mode = SPI_MODE_0;
