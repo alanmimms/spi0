@@ -381,7 +381,9 @@ static void dumpHex(u8 *bufP, u32 size) {
 
   for (int k = 0; k < size; ++k) {
     if (k % DUMP_LINE_BYTES == 0) fprintf(stderr, "%s%06X:", k > 0 ? "\n" : "", k);
+    if (k % DUMP_LINE_BYTES == DUMP_LINE_BYTES/2) fprintf(stderr, " ");
     fprintf(stderr, " %02X", bufP[k]);
+    if (k % 4 == 3) fprintf(stderr, " ");
   }
 
   fprintf(stderr, "\n");
@@ -471,13 +473,48 @@ static void formatFastRead(char *nameP, struct FastRead *frP) {
 
 // Dump the contents of a JEDEC standard parameter table header at `p`.
 static void dumpParamHeader(u8 *p, int n) {
-  u8 id = GET1(p);
+  u16 id = GET1(p);
   u8 minor = GET1(p);
   u8 major = GET1(p);
   u8 length = GET1(p);
   u32 ptp = GET3(p);
-  fprintf(stderr, "Parameter table #%d id %02X (%02X.%02X) %02X dwords at offset %06X\n", n, id, major, minor, length, ptp);
+  u8 idMSB = GET1(p);           /* JEDEC JESD216 rev A added second byte of vendor ID */
+  fprintf(stderr, "Parameter table #%d id %02X%02X (%02X.%02X) %02X dwords at offset %06X\n",
+          n, idMSB, id, major, minor, length, ptp);
 }
+
+
+#pragma scalar_storage_order little-endian
+struct JEDECSFDPHeader {
+  unsigned signature;           /* 0x50444653 = Little endian 'S','F','D','P' */
+  unsigned minor: 8;
+  unsigned major: 8;
+  unsigned nph: 8;
+  unsigned accessProtocol: 8;
+};
+
+
+struct JEDECBasicFlashParameterHeader {
+  unsigned idLSB: 8;
+  unsigned minor: 8;
+  unsigned major: 8;
+  unsigned dwords: 8;
+
+  unsigned ptp: 24;
+  unsigned idMSB: 8;
+};
+
+
+struct JEDECBasicFlashHeader {
+  unsigned legacyEraseSizes: 2; /* 00: reserved, 01: 4KB supported, 10: reserved, 11: 4KB not supported */
+  unsigned writeBufferGE64B: 1;
+  unsigned blockProtectAlwaysVolatile: 1;
+  unsigned use06WE: 1;          /* Legacy: 0x50 vs 0x06 for write enable */
+};
+
+
+#pragma scalar_storage_order default
+
 
 
 static void displayDeviceInfo(void) {
@@ -670,9 +707,9 @@ static void displayDeviceInfo(void) {
 
 static void executeOperations(void) {
   static u8 jedecSFDP[] = {
-      0x5A,            /* JEDEC READ SFDP command */
-      0x98, 0, 0,      /* 24b address (specified by JEDEC JESD6801) */
-      0,               /* 8b dummy */
+      0x5A,        /* JEDEC JESD216D.01 READ SFDP command */
+      0, 0, 0,     /* 24b address */
+      0,           /* 8b dummy */
   };
 
   u8 mode = SPI_MODE_0;
