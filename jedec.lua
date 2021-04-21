@@ -96,6 +96,8 @@ CFI.queryStructure = structure{
 -- Definitions from JEDEC Standard No. 216D.01.
 local JEDEC = {}
 
+JEDEC.SFDPCommand = "\x5A\x00\x00\x00\x00";
+
 JEDEC.SFDPheader = structure{
   dword{signature={31,0}},
   dword{
