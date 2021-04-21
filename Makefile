@@ -1,4 +1,4 @@
-CFLAGS = -std=gnu99 -fPIC -I/usr/include/lua5.3
+CFLAGS = -std=gnu99 -fPIC -I/usr/include/lua5.3 -Wno-pointer-to-int-cast
 LDFLAGS = -shared -Llua5.3
 DEBUGFLAGS = -g
 DEBUGCFLAGS = -O0 -D_DEBUG
