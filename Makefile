@@ -1,9 +1,19 @@
-CFLAGS = -Wno-pointer-to-int-cast -g
-TARGETS = spi0
+CFLAGS = -std=gnu99 -fPIC -I/usr/include/lua5.3
+LDFLAGS = -shared -Llua5.3
+DEBUGFLAGS = -g
+DEBUGCFLAGS = -O0 -D_DEBUG
+
+TARGETS = spiops.so
+OBJS = spiops.o
 
 all:	$(TARGETS)
 
-spi0:	spi0.c
+spiops.o:	spiops.c
+	$(CC) $(CFLAGS) $(DEBUGFLAGS) $(DEBUGCFLAGS) -c -o $@ $^
+
+spiops.so:	spiops.o
+	$(LD) $(LDFLAGS) $(DEBUGFLAGS) $(DEBUGLDFLAGS) -o $@ $^
 
 clean:
-	rm -f $(TARGETS)
+	rm -f $(TARGETS) $(OBJS)
+
