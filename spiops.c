@@ -48,26 +48,72 @@ static int doClose(lua_State *L) {
 
 
 static int doCommand(lua_State *L) {
+  struct spi_ioc_transfer msg[2];
+  size_t txLen;
+
+  if (lua_gettop(L) != 3) luaL_error(L, "doCommand requires: integer fileHandle, string txBuf, integer rxLength");
+  int fd = lua_tointeger(L, 1);
+  const void *txBuf = lua_tolstring(L, 2, &txLen);
+  size_t rxLen = lua_tointeger(L, 3);
+
+  void *rxBuf = malloc(rxLen + 1);
+  int st;
+
+  if (!rxBuf) luaL_error(L, "doCommand failed to allocate space for requested rx length");
+
+  bzero(msg, sizeof(msg));
+  msg[0].tx_buf = (u64) txBuf;
+  msg[0].len = txLen;
+  msg[1].rx_buf = (u64) rxBuf;
+  msg[1].len = lua_tointeger(L, 2);
+
+  st = ioctl(fd, msg[1].len ? SPI_IOC_MESSAGE(2) : SPI_IOC_MESSAGE(1), msg);
+  if (st < 0) luaL_error(L, "bad ioctl() return status from SPI operation");
+  lua_pushlstring(L, rxBuf, msg[2].len);
   return 1;
 }
 
 
 static int setMode(lua_State *L) {
+  int n = lua_gettop(L);
+  if (n != 2) luaL_error(L, "setMode requires exactly two parameters: integer fileHandled, integer theMode");
+  int fd = lua_tointeger(L, 1);
+  u8 mode = lua_tointeger(L, 2);
+  int st = ioctl(fd, SPI_IOC_WR_MODE, &mode);
+  if (st < 0) luaL_error(L, "bad ioctl() return status from SPI setMode operation");
   return 0;
 }
 
 
 static int setEndian(lua_State *L) {
+  int n = lua_gettop(L);
+  if (n != 2) luaL_error(L, "setEndian requires exactly two parameters: integer fileHandled, boolean useLSBfirst");
+  int fd = lua_tointeger(L, 1);
+  u8 lsbFirst = lua_toboolean(L, 2);
+  int st = ioctl(fd, SPI_IOC_WR_LSB_FIRST, &lsbFirst);
+  if (st < 0) luaL_error(L, "bad ioctl() return status from SPI setEndian operation");
   return 0;
 }
 
 
 static int setBPW(lua_State *L) {
+  int n = lua_gettop(L);
+  if (n != 2) luaL_error(L, "setBPW requires exactly two parameters: integer fileHandled, integer bitsPerWord");
+  int fd = lua_tointeger(L, 1);
+  u8 bpw = lua_tointeger(L, 2);
+  int st = ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bpw);
+  if (st < 0) luaL_error(L, "bad ioctl() return status from SPI setBPW operation");
   return 0;
 }
 
 
 static int setSpeed(lua_State *L) {
+  int n = lua_gettop(L);
+  if (n != 2) luaL_error(L, "setSpeed requires exactly two parameters: integer fileHandled, integer spiBusSpeedInHz");
+  int fd = lua_tointeger(L, 1);
+  u32 speed = lua_tointeger(L, 2);
+  int st = ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed);
+  if (st < 0) luaL_error(L, "bad ioctl() return status from SPI setSpeed operation");
   return 0;
 }
 
