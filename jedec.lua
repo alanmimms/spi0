@@ -1,3 +1,5 @@
+local JEDEC = {}
+
 -- Append the table `toAppend` to a copy of the existing table
 -- `source` and return the result.
 local function append(source, toAppend)
@@ -51,6 +53,7 @@ local function byte(fields)
 end
 
 
+
 -- Definitions from JEDEC Standard No. JESD68.01.
 local CFI = {
   queryModeAddr = 0x55,
@@ -58,6 +61,7 @@ local CFI = {
   readArrayModeData=0xFF,
   querySignature={'Q', 'R', 'Y'},
 }
+JEDEC.CFI = CFI
 
 
 CFI.queryStructure = structure{
@@ -94,8 +98,6 @@ CFI.queryStructure = structure{
 
 
 -- Definitions from JEDEC Standard No. 216D.01.
-local JEDEC = {}
-
 JEDEC.SFDPCommand = "\x5A\x00\x00\x00\x00";
 
 JEDEC.SFDPheader = structure{
@@ -324,5 +326,4 @@ JEDEC.basicFlashParameterHeader = structure{
 }
 
 
-return {JEDEC=JEDEC, CFI=CFI}
-
+return JEDEC

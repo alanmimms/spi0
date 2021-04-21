@@ -49,10 +49,10 @@ static int doClose(lua_State *L) {
 
 static int doCommand(lua_State *L) {
   struct spi_ioc_transfer msg[2];
-  size_t txLen;
 
   if (lua_gettop(L) != 3) luaL_error(L, "doCommand requires: integer fileHandle, string txBuf, integer rxLength");
   int fd = lua_tointeger(L, 1);
+  size_t txLen;
   const void *txBuf = lua_tolstring(L, 2, &txLen);
   size_t rxLen = lua_tointeger(L, 3);
 
@@ -65,11 +65,13 @@ static int doCommand(lua_State *L) {
   msg[0].tx_buf = (u64) txBuf;
   msg[0].len = txLen;
   msg[1].rx_buf = (u64) rxBuf;
-  msg[1].len = lua_tointeger(L, 2);
+  msg[1].len = rxLen;
 
-  st = ioctl(fd, msg[1].len ? SPI_IOC_MESSAGE(2) : SPI_IOC_MESSAGE(1), msg);
+  fprintf(stderr, "msg[0].len=%d, msg[0].tx_buf=%08X\n", msg[0].len, msg[0].tx_buf);
+  st = ioctl(fd, rxLen == 0 ? SPI_IOC_MESSAGE(1) : SPI_IOC_MESSAGE(2), msg);
+  fprintf(stderr, "st=%d, msg[1].len=%d\n", st, msg[1].len);
   if (st < 0) luaL_error(L, "bad ioctl() return status from SPI operation");
-  lua_pushlstring(L, rxBuf, msg[2].len);
+  lua_pushlstring(L, rxBuf, st);
   return 1;
 }
 
