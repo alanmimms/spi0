@@ -4,3 +4,4 @@ doc/
 .*~
 spiops.o
 spiops.so
+dumps/
