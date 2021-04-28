@@ -1,4 +1,12 @@
 local JEDEC = {}
+--local BitStruct = require "bitstruct"
+
+
+-- Definitions from JEDEC Standard No. 216D.01.
+JEDEC.SFDPCommand = "\x5A\x00\x00\x00\x00";
+
+
+--[===[
 
 -- Append the table `toAppend` to a copy of the existing table
 -- `source` and return the result.
@@ -8,99 +16,17 @@ local function append(source, toAppend)
 end
 
 
-local function dword(fields)
-  return fields
-end
-
-
 local function include(toInclude)
   return toInclude
 end
 
-
--- Finish defining bit structure using a table created using elements
--- created by dword() and include() above.
---
--- E.g.,
---
--- local header = structure{
---   dword{
---     firstByte={7, 0},
---     secondByte={15, 8},
---     aNybble={19, 16},
---     aWideField={30,20, {[0]='first', [1]='second', [2]='third'}},
---     aBit=31},
---   dword{fullWordField={31,0}},
--- }
-local function structure(fields)
-  return fields
-end
+local dword = BitStruct.FixedWordFactory(32)
+local word24 = BitStruct.FixedWordFactory(24)
+local word16 = BitStruct.FixedWordFactory(16)
+local byte = BitStruct.FixedWordFactory(8)
 
 
-
-local function word24(fields)
-  return fields
-end
-
-
-local function word16(fields)
-  return fields
-end
-
-
-local function byte(fields)
-  return fields
-end
-
-
-
--- Definitions from JEDEC Standard No. JESD68.01.
-local CFI = {
-  queryModeAddr = 0x55,
-  queryModeData = 0x98,
-  readArrayModeData=0xFF,
-  querySignature={'Q', 'R', 'Y'},
-}
-JEDEC.CFI = CFI
-
-
-CFI.queryStructure = structure{
-  word24{'signature'},
-  word16{'primaryInterfaceID'},
-  word16{'primaryExtendedQueryAddr'},
-  word16{'alternativeInterfaceID'},
-  word16{'alternativeExtendedQueryAddr'},
-
-  byte{'vccMinProgEraseWrite'},
-  byte{'vccMaxProgEraseWrite'},
-  byte{'vppMinProgEraseWrite'},
-  byte{'vppMaxProgEraseWrite'},
-  byte{'typicalSmallProgramTime'},
-  byte{'typicalMaxProgramTime'},
-  byte{'typicalBlockEraseTime'},
-  byte{'typicalFullChipEraseTime'},
-  byte{'maxSmallProgramTime'},
-  byte{'maxMaxProgramTime'},
-  byte{'maxBlockEraseTime'},
-  byte{'maxChipEraseTime'},
-  
-  byte{'deviceSize'},
-  byte{'interfaceCode'},
-  byte{'maxMultiByteProgram'},
-  byte{'eraseBlockRegionCount'},
-  dword{
-    eraseBlock256B={31,16},
-    eraseBlockCount={15,0},
-  },
-
-  -- .... XXX finish this ....
-}
-
-
--- Definitions from JEDEC Standard No. 216D.01.
-JEDEC.SFDPCommand = "\x5A\x00\x00\x00\x00";
-
-JEDEC.SFDPheader = structure{
+JEDEC.SFDPheader = BitStruct:new{
   dword{signature={31,0}},
   dword{
     accessProtocol={31,24},
@@ -110,7 +36,7 @@ JEDEC.SFDPheader = structure{
   },
 }
 
-JEDEC.parameterHeader = structure{
+JEDEC.parameterHeader = BitStruct:new{
   dword{
     length={31,24},
     major={23,16},
@@ -119,7 +45,7 @@ JEDEC.parameterHeader = structure{
   },
 }
 
-JEDEC.basicFlashParameterHeader = structure{
+JEDEC.basicFlashParameterHeader = BitStruct:new{
 
   header=JEDEC.parameterHeader,
 
@@ -325,5 +251,6 @@ JEDEC.basicFlashParameterHeader = structure{
   },
 }
 
+--]===]
 
 return JEDEC

@@ -67,9 +67,7 @@ static int doCommand(lua_State *L) {
   msg[1].rx_buf = (u64) rxBuf;
   msg[1].len = rxLen;
 
-  fprintf(stderr, "msg[0].len=%d, msg[0].tx_buf=%08X\n", msg[0].len, msg[0].tx_buf);
   st = ioctl(fd, rxLen == 0 ? SPI_IOC_MESSAGE(1) : SPI_IOC_MESSAGE(2), msg);
-  fprintf(stderr, "st=%d, msg[1].len=%d\n", st, msg[1].len);
   if (st < 0) luaL_error(L, "bad ioctl() return status from SPI operation");
   lua_pushlstring(L, rxBuf, st);
   return 1;
