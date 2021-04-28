@@ -56,7 +56,7 @@ static int doCommand(lua_State *L) {
   const void *txBuf = lua_tolstring(L, 2, &txLen);
   size_t rxLen = lua_tointeger(L, 3);
 
-  void *rxBuf = malloc(rxLen + 1);
+  void *rxBuf = calloc(rxLen + 1, 1);
   int st;
 
   if (!rxBuf) luaL_error(L, "doCommand failed to allocate space for requested rx length");
@@ -69,7 +69,10 @@ static int doCommand(lua_State *L) {
 
   st = ioctl(fd, rxLen == 0 ? SPI_IOC_MESSAGE(1) : SPI_IOC_MESSAGE(2), msg);
   if (st < 0) luaL_error(L, "bad ioctl() return status from SPI operation");
-  lua_pushlstring(L, rxBuf, st);
+//  fprintf(stderr, "doCommand rxLen=%d, msg[1].len, st=%d\n", rxLen, msg[1].len, st);
+
+  lua_pushlstring(L, rxBuf, st - txLen);
+  free(rxBuf);
   return 1;
 }
 
