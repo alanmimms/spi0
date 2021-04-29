@@ -3,6 +3,7 @@ local JEDEC = require "jedec"
 local SPIOPS = require "spiops"
 local MAXBUF = 2048
 local SPISpeed = 25*1000*1000
+local posix = require "posix"
 
 local sha = require "sha2"
 
@@ -10,11 +11,29 @@ local sha = require "sha2"
 local READ_ID = 0x9E
 local ENTER_4B_MODE, EXIT_4B_MODE = 0xB7, 0xE9
 local READ_4B = 0x13
+local BULK_ERASE = 0xC7         -- This has 0xC7/0x60 in docs - which is it? Both? Either?
+local READ_FLAG_STATUS = 0x70
+local PROGRAM_PAGE_4B = 0x12
 
 
 local DeviceSize = 64*1024*1024
+local ProgramPageSize = 256
 local ChunkSize = 2048
 local MB = 1*1024*1024
+
+
+local bFLAG_STATUS = {
+  notBusy = 0x80,
+  eraseSuspend = 0x40,
+  eraseFailure = 0x20,
+  programFailure = 0x10,
+  reserved = 0x08,
+  programSuspend = 0x04,
+  protectionError = 0x02,
+  fourByteAddressing = 0x01,
+}
+
+local anyError = bFLAG_STATUS.eraseFailure | bFLAG_STATUS.programFailure | bFLAG_STATUS.protectionError;
 
 
 -- Dump the specified string in hex and ASCII with address offsets in
@@ -28,7 +47,7 @@ function hexDump(s)
   function dumpLine()
     local ascii = string.gsub(string.sub(s, startK+1, k+1), '[^%g ]', '?')
     ascii = string.sub(ascii, 1, 8) .. ' ' .. string.sub(ascii, 9, -1)
-    print(string.format('%-' .. (6+chunkSize*3) .. 's  |%s|', line, ascii))
+    print(string.format('%-' .. (6+chunkSize*3) .. 's  |%' .. (chunkSize+1) .. 's|', line, ascii))
   end
 
   while (k < #s) do
@@ -52,9 +71,9 @@ function usage(msg)
   if not msg then msg = '' end
   io.stderr:write([[
 Usage:
-  spi0 {read,verify,write,erase} device [file]
+  spi0 {read,verify,write,bulk-erase} device [file]
 
-Read, or read and verify, or erase and write, or simply erase the flash device on device (e.g., /dev/spidev0.0).
+Read, or read and verify, or erase and write, or simply bulk-erase the entire flash device on device (e.g., /dev/spidev0.0).
 The `file` parameter is used for read, verify, and write operations.
 
 ]], msg, '\n')
@@ -68,6 +87,38 @@ function openChecked(f, mode)
   local f = io.open(f, mode)
   if not f then usage('Cannot open "' .. f .. ' for ' .. op) end
   return f
+end
+
+
+function doWriteEnableDisable(devFD, enable)
+  local cmd
+
+  if enable then
+    cmd = 0x06
+  else
+    cmd = 0x04
+  end
+
+  SPIOPS.doCommand(devFD, string.pack('>B', cmd), 0)
+end
+
+
+function waitIdle(devFD, sleepTime)
+  repeat
+    if sleepTime then io.write('.') end
+    local statusBuf = SPIOPS.doCommand(devFD, string.pack('>B', READ_FLAG_STATUS), 1)
+    status = statusBuf:byte(1, 1)
+--    io.write(string.format(' %02X', status))
+
+    if (status & anyError) ~= 0 then
+      print(string.format('Status indicates error: %02X', status))
+      break
+    end
+
+    if sleepTime then posix.sleep(sleepTime) end
+  until (status & bFLAG_STATUS.notBusy) ~= 0
+
+  return status
 end
 
 
@@ -105,7 +156,47 @@ end
 
 
 function doWrite(devFD, file)
-  print('Write is not yet implemented')
+  local lastMB = -1
+  local addr
+
+  local f = openChecked(file, "rb")
+  local data = f:read('a')
+  f:close()
+
+  print(string.format('Writing device from file %s (%d bytes)', file, #data))
+  io.stdout:setvbuf('no')
+
+  for addr = 0, #data - 1, ProgramPageSize do
+    doWriteEnableDisable(devFD, true)             -- Enable writing
+
+    if addr // MB ~= lastMB then
+      local eol
+      lastMB = addr // MB
+
+      if (lastMB % 16 == 15) then
+        eol = '\n'
+      else
+        eol = ''
+      end
+      
+      io.write(string.format("%3dMB%s", lastMB, eol))
+    end
+
+    -- Note this correctly handles files shorter than a multiple of a
+    -- ProgramPageSize since data:sub() truncates buffer as needed.
+    local chunk = data:sub(addr+1, addr+ProgramPageSize)
+    SPIOPS.doCommand(devFD, string.pack(">BI4", PROGRAM_PAGE_4B, addr) .. chunk, 0)
+
+    status = waitIdle(devFD)
+
+    if (status & anyError) ~= 0 then
+      print(string.format('Program operation terminated in error status %02X', status))
+      break
+    end
+  end
+
+  doWriteEnableDisable(devFD, false)             -- Disable writing
+  io.write('\n')
 end
 
 
@@ -114,11 +205,22 @@ function doVerify(devFD, file)
 end
 
 
-function doErase(devFD)
-  print('Erase is not yet implemented')
+function doBulkErase(devFD)
+  doWriteEnableDisable(devFD, true)             -- Enable writing
+  SPIOPS.doCommand(devFD, string.pack('>B', BULK_ERASE), 0)        -- Start bulk erase operation
+
+  local status
+  io.stdout:setvbuf('no')
+  io.write('Erasing full device')
+
+  status = waitIdle(devFD, 2)
+
+  -- Disable writing again
+  doWriteEnableDisable(devFD, false)
+  io.write('\n')
+  io.stdout:setvbuf('line')
+  print(string.format('Ending status flag register=%02X (i.e., success)', status))
 end
-
-
 
 
 if #arg < 2 or #arg > 3 then usage('Must have two or three arguments') end
@@ -131,12 +233,12 @@ if op == 'read' then
   if #arg ~= 3 then usage('Read requires three arguments') end
 elseif op == 'write' then
   if #arg ~= 3 then usage('Write requires three arguments') end
-elseif op == 'erase' then
-  if #arg ~= 2 then usage('Erase requires two arguments') end
+elseif op == 'bulk-erase' then
+  if #arg ~= 2 then usage('Bulk-erase requires two arguments') end
 elseif op == 'verify' then
   if #arg ~= 3 then usage('Verify requires three arguments') end
 else
-  usage('Unknown operation "' .. op .. '". Must use read, write, erase, or verify.')
+  usage('Unknown operation "' .. op .. '". Must use read, write, bulk-erase, or verify.')
 end
 
 local devFD = SPIOPS.doOpen(device)
@@ -166,7 +268,7 @@ local capacities = {
   [0x17] = 64 // 8,
 }
 
-local readIDBuf = SPIOPS.doCommand(devFD, string.pack(">B", READ_ID), 20)
+local readIDBuf = SPIOPS.doCommand(devFD, string.pack('>B', READ_ID), 20)
 local devMfg, devType, devCap = readIDBuf:byte(1, 3)
 local devMfgString = manufacturers[devMfg] or '?'
 local devTypeString = types[devType] or '?'
@@ -187,12 +289,13 @@ if false then
 end
 
 
-SPIOPS.doCommand(devFD, ENTER_4B_MODE, 0)
+SPIOPS.doCommand(devFD, string.pack('>B', ENTER_4B_MODE), 0)
 
 if op == 'read' then doRead(devFD, file)
 elseif op == 'write' then doWrite(devFD, file)
 elseif op == 'verify' then doVerify(devFD, file)
-elseif op == 'erase' then doErase(devFD)
+elseif op == 'bulk-erase' then doBulkErase(devFD)
+else
   usage('Unknown "op" value "' .. op .. '"')
 end
 
