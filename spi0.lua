@@ -386,14 +386,13 @@ end
 function fixRangeSize(v)
   if v == 'end' then return DeviceSize end
 
-  local nMatch = v:match('0[xX](%x+)([kKmM]?)') or
-    v:match('(%d+)([kKmM]?)') or
-    usage('Unrecognized number syntax in range "' .. v ..'"')
+  local digits, unit = v:match('(0[xX]%x+)([kKmM]?)')
+  if not digits then digits, unit =v:match('(%d+)([kKmM]?)') end
+  if not digits then usage('Unrecognized number syntax in range "' .. v ..'"') end
 
   local multiplier = {k=KB, K=KB, m=MB, M=MB}
-  return tonumber(nMatch[1]) * (nMatch[2] and multiplier[nMatch[2]] or 1)
+  return tonumber(digits) * (unit and multiplier[unit] or 1)
 end
-
 
 
 -- Handle range specifications. Since this is called by the default
@@ -406,16 +405,15 @@ function doRange(range)
   end
 
   -- If we get here it's either a base..top or an base+size style range.
-  -- In the result is
-  -- * m[1] for the base of the range
-  -- * m[2] for '..' or '+' to indicate the range type
-  -- * m[3] for the top or size of the range
-  local m = range:match('(%w+)([%.%+]+)(%w+)') or
+  local baseString, op, endString = range:match('(%w+)([%.%+]+)(%w+)')
+  if not baseString or not op or not endString then
     usage('Unrecognized operation or bad range specification syntax "' .. range .. '"')
-  local base = fixRangeSize(m[1])
+  end
+  
+  local base = fixRangeSize(baseString)
   local top =
-    (m[2] == '+') and (base + math.min(DeviceSize - base, fixRangeSize(m[3]))) or
-    (m[2] == '..') and (math.min(DeviceSize, fixRangeSize(m[3]))) or
+    (op == '+') and (base + math.min(DeviceSize - base, fixRangeSize(endString))) or
+    (op == '..') and (math.min(DeviceSize, fixRangeSize(endString))) or
     usage('Unrecognized syntax for range "' .. range .. '"')
 
   devRange = {base, top}
