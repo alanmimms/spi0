@@ -91,14 +91,7 @@ end
 
 
 function doWriteEnableDisable(devFD, enable)
-  local cmd
-
-  if enable then
-    cmd = 0x06
-  else
-    cmd = 0x04
-  end
-
+  local cmd = enable and 0x06 or 0x04
   SPIOPS.doCommand(devFD, string.pack('>B', cmd), 0)
 end
 
@@ -134,15 +127,8 @@ function doRead(devFD, file)
   for addr = 0, DeviceSize - 1, ChunkSize do
 
     if addr // MB ~= lastMB then
-      local eol
       lastMB = addr // MB
-
-      if (lastMB % 16 == 15) then
-        eol = '\n'
-      else
-        eol = ''
-      end
-      
+      local eol = (lastMB % 16 == 15) and '\n' or ''
       io.write(string.format("%3dMB%s", lastMB, eol))
     end
 
@@ -170,15 +156,8 @@ function doWrite(devFD, file)
     doWriteEnableDisable(devFD, true)             -- Enable writing
 
     if addr // MB ~= lastMB then
-      local eol
       lastMB = addr // MB
-
-      if (lastMB % 16 == 15) then
-        eol = '\n'
-      else
-        eol = ''
-      end
-      
+      local eol = (lastMB % 16 == 15) and '\n' or ''
       io.write(string.format("%3dMB%s", lastMB, eol))
     end
 
@@ -332,15 +311,8 @@ if false then
   for addr = 0, DeviceSize - 1, ChunkSize do
 
     if addr // MB ~= lastMB then
-      local eol
       lastMB = addr // MB
-
-      if (lastMB % 16 == 15) then
-        eol = '\n'
-      else
-        eol = ''
-      end
-      
+      local eol = (lastMB % 16 == 15) and '\n' or ''
       io.write(string.format("%3dMB%s", lastMB, eol))
     end
 
