@@ -33,7 +33,12 @@ static int doOpen(lua_State *L) {
   if (n != 1) luaL_error(L, "doOpen requires exactly one string parameter: the device pathname");
   const char *path = lua_tostring(L, 1);
   int fd = open(path, O_RDWR);  /* Do the open */
-  lua_pushinteger(L, fd);        /* Push resulting file descriptor number or -1 for error */
+
+  if (fd < 0)
+    lua_pushnil(L);             /* We return nil for errors to be luaish */
+  else
+    lua_pushinteger(L, fd);     /* Push resulting file descriptor number or -1 for error */
+
   return 1;
 }
 

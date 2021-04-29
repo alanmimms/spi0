@@ -1,25 +1,32 @@
 #!/usr/bin/env lua
 local JEDEC = require "jedec"
 local SPIOPS = require "spiops"
-local MAXBUF = 2048
-local SPISpeed = 25*1000*1000
 local posix = require "posix"
 
-local sha = require "sha2"
+local MHz = 1000*1000
+local SPISpeed = 25*MHz
+
+local KB = 1024
+local MB = KB*KB
 
 -- MT25QL512ABB8ESF-0SIT specific?
 local READ_ID = 0x9E
 local ENTER_4B_MODE, EXIT_4B_MODE = 0xB7, 0xE9
 local READ_4B = 0x13
+local SECTOR_ERASE = 0xD8
 local BULK_ERASE = 0xC7         -- This has 0xC7/0x60 in docs - which is it? Both? Either?
 local READ_FLAG_STATUS = 0x70
 local PROGRAM_PAGE_4B = 0x12
 
 
-local DeviceSize = 64*1024*1024
+local DeviceSize = 64*MB
+local SectorSize = 64*KB
 local ProgramPageSize = 256
-local ChunkSize = 2048
-local MB = 1*1024*1024
+local SPIChunkSize = 2048
+
+local devFD
+local devInfo = {}
+local devRange
 
 
 local bFLAG_STATUS = {
@@ -39,7 +46,7 @@ local anyError = bFLAG_STATUS.eraseFailure | bFLAG_STATUS.programFailure | bFLAG
 -- Dump the specified string in hex and ASCII with address offsets in
 -- blocks of 16 as has been done since the Big Bang.
 function hexDump(s)
-  local chunkSize=16
+  local rowSize=16
   local k = 0
   local startK = 0
   local line = ""
@@ -47,23 +54,23 @@ function hexDump(s)
   function dumpLine()
     local ascii = string.gsub(string.sub(s, startK+1, k+1), '[^%g ]', '?')
     ascii = string.sub(ascii, 1, 8) .. ' ' .. string.sub(ascii, 9, -1)
-    print(string.format('%-' .. (6+chunkSize*3) .. 's  |%' .. (chunkSize+1) .. 's|', line, ascii))
+    print(string.format('%-' .. (6+rowSize*3) .. 's  |%' .. (rowSize+1) .. 's|', line, ascii))
   end
 
   while (k < #s) do
 
-    if (k % chunkSize == 0) then
+    if (k % rowSize == 0) then
       line = string.format("%04X:", k)
       startK = k
     end
 
     line = line .. string.format(" %02X", string.byte(s, k+1))
-    if (k % chunkSize == chunkSize/2 - 1) then line = line .. " " end
-    if (k % chunkSize == chunkSize - 1) then dumpLine() end
+    if (k % rowSize == rowSize/2 - 1) then line = line .. " " end
+    if (k % rowSize == rowSize - 1) then dumpLine() end
     k = k + 1
   end
 
-  if (k % chunkSize ~= 0) then dumpLine() end
+  if (k % rowSize ~= 0) then dumpLine() end
 end
 
 
@@ -71,10 +78,51 @@ function usage(msg)
   if not msg then msg = '' end
   io.stderr:write([[
 Usage:
-  spi0 {read,verify,write,bulk-erase} device [file]
+  `spi0` device ( [{bottom`..`top | base`+`size | `all`}]
+                  {`read` [file] | `verify` [file] | `write` [file] | `erase`} )+
 
-Read, or read and verify, or erase and write, or simply bulk-erase the entire flash device on device (e.g., /dev/spidev0.0).
-The `file` parameter is used for read, verify, and write operations.
+device (e.g., /dev/spidev0.0) must be specified.
+
+If present, the optional range specifies a subset of bytes in the
+device to operate on starting at `base` or `bottom` through `top`-1 or
+`base`+`size`-1. If the range is not a multiple of the device's erase
+block size it is an error and the operation will not be done. Once a
+range is specified it applies to all subsequent operations on the
+command line. Using the keyword `all` implies the range should
+encompass the full device, which is also the initial default.
+
+Values for `bottom`, `top`, `base`, and `size` are
+
+  [`0x`] digits+ {empty | `K` | `M`}
+
+If `0x` is present the digits are interpreted as hexadecimal and
+otherwise as decimal. If `K` (1024) or `M` (1024*1024) are present
+they are interepreted as multipliers for the value.
+
+The `top` or `size` may be specified as the keyword `end` to indicate
+the range extends to the end of the device.
+
+Any number of operations can be specified. All operations do only what
+they say. You must usually erase and region before you can write it.
+
+For example:
+
+  To erase the first 64K of the device on /dev/spidev0.0 use
+    spi0 /dev/spidev0.0 0..64K erase
+
+  To erase the region from 256K to 256K+64K use
+    spi0 /dev/spidev0.0 256K+64K erase
+
+  To erase the entire device use
+    spi0 /dev/spidev0.0 all erase
+  (or `all` may be left off since it is the default.)
+
+  To erase the region and then write the contents of kernel.img (up to
+  6MB in size) to the device starting at 4MB use
+    spi0/dev/spidev0.0 4M+6M erase write kernel.img
+
+  To read the first, third, and fifth megabytes of the device and save them to files use
+    spi0/dev/spidev0.0 1M+1M read first.img 3M+1M read third.img 5M+1M read fifth.img
 
 ]], msg, '\n')
   os.exit(false, true)
@@ -115,50 +163,60 @@ function waitIdle(devFD, sleepTime)
 end
 
 
+-- Return a human readable version of the specified device range.
+function rangeString(range)
+  return string.format('0x%X..0x%X', range[1], range[2])
+end
 
-function doRead(devFD, file)
-  local f = openChecked(file, "wb")
-  local lastMB = -1
+
+function doRead()
+  local msg = 'Read operation requires a valid filename to write to'
+  local file = table.remove(arg, 1) or usage(msg)
+  local f = openChecked(file, "wb") or usage(msg)
+  local prevMB = -1
   local addr
 
-  print("Reading device and dumping to " .. file)
   io.stdout:setvbuf('no')
+  print("Reading device " .. rangeString(devRange) .. " dumping to file '" .. file .. '"')
 
-  for addr = 0, DeviceSize - 1, ChunkSize do
+  for addr = devRange[1], devRange[2] - 1, SPIChunkSize do
 
-    if addr // MB ~= lastMB then
-      lastMB = addr // MB
-      local eol = (lastMB % 16 == 15) and '\n' or ''
-      io.write(string.format("%3dMB%s", lastMB, eol))
+    if addr // MB ~= prevMB then
+      prevMB = addr // MB
+      local eol = (prevMB % 16 == 15) and '\n' or ''
+      io.write(string.format("%3dMB%s", prevMB, eol))
     end
 
-    local readBuf = SPIOPS.doCommand(devFD, string.pack(">BI4", READ_4B, addr), ChunkSize)
+    local readBuf = SPIOPS.doCommand(devFD, string.pack(">BI4", READ_4B, addr), SPIChunkSize)
     f:write(readBuf)
   end
 
   f:close()
   io.write('\n')
+  io.stdout:setvbuf('line')
 end
 
 
-function doWrite(devFD, file)
-  local lastMB = -1
+function doWrite()
+  local msg = 'Write operation requires a valid filename to read image from'
+  local file = table.remove(arg, 1) or usage(msg)
+  local prevMB = -1
   local addr
 
   local f = openChecked(file, "rb")
-  local data = f:read('a')
+  local data = f:read('a') or usage(msg)
   f:close()
 
-  print(string.format('Writing device from file %s (%d bytes)', file, #data))
   io.stdout:setvbuf('no')
+  print(string.format('Writing device %s from file "%s" (%d bytes)', rangeString(devRange), file, #data))
 
-  for addr = 0, #data - 1, ProgramPageSize do
+  for addr = devRange[1], math.min(DeviceSize - 1, devRange[2] + #data - 1), ProgramPageSize do
     doWriteEnableDisable(devFD, true)             -- Enable writing
 
-    if addr // MB ~= lastMB then
-      lastMB = addr // MB
-      local eol = (lastMB % 16 == 15) and '\n' or ''
-      io.write(string.format("%3dMB%s", lastMB, eol))
+    if addr // MB ~= prevMB then
+      prevMB = addr // MB
+      local eol = (prevMB % 16 == 15) and '\n' or ''
+      io.write(string.format("%3dMB%s", prevMB, eol))
     end
 
     -- Note this correctly handles files shorter than a multiple of a
@@ -176,23 +234,87 @@ function doWrite(devFD, file)
 
   doWriteEnableDisable(devFD, false)             -- Disable writing
   io.write('\n')
+  io.stdout:setvbuf('line')
 end
 
 
-function doVerify(devFD, file)
-  print('Verify is not yet implemented')
-end
+function doVerify()
+  local msg = 'Verify operation requires a valid filename to compare to'
+  local file = table.remove(arg, 1) or usage(msg)
+  local f = openChecked(file, "rb") or usage(msg)
+  local prevMB = -1
+  local addr
 
-
-function doBulkErase(devFD)
-  doWriteEnableDisable(devFD, true)             -- Enable writing
-  SPIOPS.doCommand(devFD, string.pack('>B', BULK_ERASE), 0)        -- Start bulk erase operation
-
-  local status
   io.stdout:setvbuf('no')
-  io.write('Erasing full device')
+  print(string.format('Verifying device %s against file "%s"', rangeString(devRange), file))
 
-  status = waitIdle(devFD, 2)
+  for addr = devRange[1], devRange[2] - 1, SPIChunkSize do
+
+    if addr // MB ~= prevMB then
+      prevMB = addr // MB
+      local eol = (prevMB % 16 == 15) and '\n' or ''
+      io.write(string.format("%3dMB%s", prevMB, eol))
+    end
+
+    local size = SPIChunkSize
+    local fileBuf = f:read(size)
+    if not fileBuf then break end               -- Exit verification loop on EOF
+    size = math.min(size, #fileBuf)
+    local readBuf = SPIOPS.doCommand(devFD, string.pack(">BI4", READ_4B, addr), size)
+
+    -- If fast compare says they are not identical drill down and find
+    -- out where mismatch lies.
+    if readBuf ~= dataBuf then
+
+      -- Otherwise find the mismatch
+      local k
+      for k = 1, size do
+        local devByte = readBuf:sub(k, k):byte()
+        local fileByte = fileBuf:sub(k, k):byte()
+
+        if devByte ~= fileByte then
+          io.stderr:write(string.format('Device verify mismatch at 0x%X: was 0x%02X, should be 0x%02X\n',
+              addr - devRange[1] + k - 1, devByte, fileByte))
+          os.exit(false, true)
+        end
+      end
+    end
+  end
+
+  f:close()
+  io.write('\n')
+  print('Device verification successful')
+  io.stdout:setvbuf('line')
+end
+
+
+function doErase()
+  local status
+
+  doWriteEnableDisable(devFD, true)             -- Enable writing
+  io.stdout:setvbuf('no')
+
+  if devRange[2] - devRange[1] == DeviceSize then
+    SPIOPS.doCommand(devFD, string.pack('>B', BULK_ERASE), 0)        -- Start bulk erase operation
+    io.write('Erasing entire device')
+    status = waitIdle(devFD, 2)
+  else
+    local addr
+    local prevMB = -1
+
+    io.write('Erasing range ' .. rangeString(devRange))
+
+    for addr = devRange[1], devRange[2] - 1, SectorSize do
+      if addr // MB ~= prevMB then
+        prevMB = addr // MB
+        local eol = (prevMB % 16 == 15) and '\n' or ''
+        io.write(string.format("%3dMB%s", prevMB, eol))
+      end
+
+      SPIOPS.doCommand(devFD, string.pack('>BI4', SECTOR_ERASE, addr), 0)        -- Start sector erase operation
+      status = waitIdle(devFD, 2)
+    end
+  end
 
   -- Disable writing again
   doWriteEnableDisable(devFD, false)
@@ -202,125 +324,122 @@ function doBulkErase(devFD)
 end
 
 
-if #arg < 2 or #arg > 3 then usage('Must have two or three arguments') end
+-- This eats the device name from the `arg` list and validates it for use.
+function setupDevice()
+  local device = table.remove(arg, 1) or usage('Device name must be specified')
+  devFD = SPIOPS.doOpen(device) or usage('Error opening device "' .. device .. '" for SPI operations.')
 
-local op = arg[1]
-local device = arg[2]
-local file = arg[3]
+  SPIOPS.setMode(devFD, 0)
+  SPIOPS.setBPW(devFD, 8)
+  SPIOPS.setSpeed(devFD, SPISpeed)
+  SPIOPS.doCommand(devFD, string.pack('>B', ENTER_4B_MODE), 0)
 
-if op == 'read' then
-  if #arg ~= 3 then usage('Read requires three arguments') end
-elseif op == 'write' then
-  if #arg ~= 3 then usage('Write requires three arguments') end
-elseif op == 'bulk-erase' then
-  if #arg ~= 2 then usage('Bulk-erase requires two arguments') end
-elseif op == 'verify' then
-  if #arg ~= 3 then usage('Verify requires three arguments') end
-else
-  usage('Unknown operation "' .. op .. '". Must use read, write, bulk-erase, or verify.')
-end
+  local manufacturers = {
+    [0x20] = 'Micron',
+  }
 
-local devFD = SPIOPS.doOpen(device)
-if not devFD then usage('Error opening device "' .. device .. '" for SPI operations.') end
+  local types = {
+    [0xBA] = '3V',
+    [0xBB] = '1.8V',
+  }
 
+  local capacities = {
+    [0x22] = 2048 // 8,
+    [0x21] = 1024 // 8,
+    [0x20] = 512 // 8,
+    [0x19] = 256 // 8,
+    [0x18] = 128 // 8,
+    [0x17] = 64 // 8,
+  }
 
-SPIOPS.setMode(devFD, 0)
-SPIOPS.setBPW(devFD, 8)
-SPIOPS.setSpeed(devFD, SPISpeed)
+  local readIDBuf = SPIOPS.doCommand(devFD, string.pack('>B', READ_ID), 20)
+  devInfo.mfg, devInfo.type, devInfo.cap = readIDBuf:byte(1, 3)
+  devInfo.mfgString = manufacturers[devInfo.mfg] or '?'
+  devInfo.typeString = types[devInfo.type] or '?'
+  devInfo.capString = capacities[devInfo.cap] or '?'
+  print(string.format("Read ID: Manufacturer=%02X(%s) type=%02X(%s) capacity=%02X(%sMB)",
+      devInfo.mfg, devInfo.mfgString, devInfo.type, devInfo.typeString, devInfo.cap, devInfo.capString))
+  hexDump(readIDBuf)
 
-
-local manufacturers = {
-  [0x20] = 'Micron',
-}
-
-local types = {
-  [0xBA] = '3V',
-  [0xBB] = '1.8V',
-}
-
-local capacities = {
-  [0x22] = 2048 // 8,
-  [0x21] = 1024 // 8,
-  [0x20] = 512 // 8,
-  [0x19] = 256 // 8,
-  [0x18] = 128 // 8,
-  [0x17] = 64 // 8,
-}
-
-local readIDBuf = SPIOPS.doCommand(devFD, string.pack('>B', READ_ID), 20)
-local devMfg, devType, devCap = readIDBuf:byte(1, 3)
-local devMfgString = manufacturers[devMfg] or '?'
-local devTypeString = types[devType] or '?'
-local devCapString = capacities[devCap] or '?'
-print(string.format("Read ID: Manufacturer=%02X(%s) type=%02X(%s) capacity=%02X(%sMB)",
-    devMfg, devMfgString, devType, devTypeString, devCap, devCapString))
-hexDump(readIDBuf)
-
-if (readIDBuf:byte(5) & 0x03) ~= 0x00 then
-  usage('Extended Device Data says sector size is not uniform 64K which is all this program supports right now.')
-end
-
-
-if false then
-  local sfdpBuf = SPIOPS.doCommand(devFD, JEDEC.SFDPCommand, 512)
-  print("SFDP: length", #sfdpBuf);
-  hexDump(sfdpBuf)
-end
-
-
-SPIOPS.doCommand(devFD, string.pack('>B', ENTER_4B_MODE), 0)
-
-if op == 'read' then doRead(devFD, file)
-elseif op == 'write' then doWrite(devFD, file)
-elseif op == 'verify' then doVerify(devFD, file)
-elseif op == 'bulk-erase' then doBulkErase(devFD)
-else
-  usage('Unknown "op" value "' .. op .. '"')
-end
-
-
-if false then
-local n
-local count = 4000
-for n=0,9 do
-  local readBuf = SPIOPS.doCommand(devFD, string.pack(">BI4", READ_4B, n*count), count)
-  print(string.format("[%d] Read 0000: length=%d", n, #readBuf));
-  local sha256 = sha.sha256(readBuf)
-  print(string.format('[%d] SHA-256=', n), sha256)
-
-  local fn = string.format('spi0.4000.%08d', n)
-  local f = assert(io.open(fn, "wb"))
-  f:write(readBuf)
-  f:close()
-end
-end
-
-
-if false then
-  local DeviceSize = 64*1024*1024
-  local ChunkSize = 2048
-  local MB = 1*1024*1024
-  local dumpFileName = "spi0.fulldump"
-  local f = assert(io.open(dumpFileName, "wb"))
-  local lastMB = -1
-  local addr
-
-  print("Reading device and dumping to " .. dumpFileName)
-  io.stdout:setvbuf('no')
-
-  for addr = 0, DeviceSize - 1, ChunkSize do
-
-    if addr // MB ~= lastMB then
-      lastMB = addr // MB
-      local eol = (lastMB % 16 == 15) and '\n' or ''
-      io.write(string.format("%3dMB%s", lastMB, eol))
-    end
-
-    local readBuf = SPIOPS.doCommand(devFD, string.pack(">BI4", READ_4B, addr), ChunkSize)
-    f:write(readBuf)
+  if (readIDBuf:byte(5) & 0x03) ~= 0x00 then
+    usage('Extended Device Data says sector size is not uniform 64K which is all this program supports right now.')
   end
 
-  f:close()
+  devRange = {0, DeviceSize - 1}
+end
+
+
+
+-- A simple table-driven switch statement. The value `op` is used to
+-- index a table of `cases` where a specially named element called
+-- `default` is used if no case matches. The table contains a
+-- function(op, p2) whose return value is returned by the switch
+-- "statement".
+function switch(op, cases, p2)
+  local case = cases[op] or cases.default or function() return nil end
+  return case(op, p2)
+end
+
+
+-- Convert a range numerical value to a number of bytes. If `v` is
+-- `end` returns DeviceSize.
+function fixRangeSize(v)
+  if v == 'end' then return DeviceSize end
+
+  local nMatch = v:match('0[xX](%x+)([kKmM]?)') or
+    v:match('(%d+)([kKmM]?)') or
+    usage('Unrecognized number syntax in range "' .. v ..'"')
+
+  local multiplier = {k=KB, K=KB, m=MB, M=MB}
+  return tonumber(nMatch[1]) * (nMatch[2] and multiplier[nMatch[2]] or 1)
+end
+
+
+
+-- Handle range specifications. Since this is called by the default
+-- switch case in the arg loop below the range is already gobbled and
+-- we have no additional parameters to gobble and check.
+function doRange(range)
+  if range == 'all' then
+    devRange = {0, DeviceSize}
+    return devRange
+  end
+
+  -- If we get here it's either a base..top or an base+size style range.
+  -- In the result is
+  -- * m[1] for the base of the range
+  -- * m[2] for '..' or '+' to indicate the range type
+  -- * m[3] for the top or size of the range
+  local m = range:match('(%w+)([%.%+]+)(%w+)') or
+    usage('Unrecognized operation or bad range specification syntax "' .. range .. '"')
+  local base = fixRangeSize(m[1])
+  local top =
+    (m[2] == '+') and (base + math.min(DeviceSize - base, fixRangeSize(m[3]))) or
+    (m[2] == '..') and (math.min(DeviceSize, fixRangeSize(m[3]))) or
+    usage('Unrecognized syntax for range "' .. range .. '"')
+
+  devRange = {base, top}
+  return devRange
+end
+
+
+
+setupDevice()
+
+-- Walk the command line parmaeters, gobbling the next keyword as we
+-- go and dispatching to the handler for the keyword which must gobble
+-- (and checks validity of) any parameters it requires.
+while true do
+  local op = table.remove(arg, 1)
+  if not op then break end
+
+  switch(op, {
+      read = doRead,
+      write = doWrite,
+      erase = doErase,
+      verify = doVerify,
+      default = doRange,
+  })
 end
 
 SPIOPS.doClose(devFD)
