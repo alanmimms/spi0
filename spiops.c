@@ -61,11 +61,12 @@ static int doCommand(lua_State *L) {
   const void *txBuf = lua_tolstring(L, 2, &txLen);
   size_t rxLen = lua_tointeger(L, 3);
 
-  void *rxBuf = calloc(rxLen + 1, 1);
+  u8 *rxBuf = malloc(rxLen + 1);
   int st;
 
   if (!rxBuf) luaL_error(L, "doCommand failed to allocate space for requested rx length");
 
+  rxBuf[rxLen] = 0;             /* Really need ending NUL byte? */
   bzero(msg, sizeof(msg));
   msg[0].tx_buf = (u64) txBuf;
   msg[0].len = txLen;

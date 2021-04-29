@@ -210,7 +210,7 @@ function doWrite()
   io.stdout:setvbuf('no')
   print(string.format('Writing device %s from file "%s" (%d bytes)', rangeString(devRange), file, #data))
 
-  for addr = devRange[1], math.min(DeviceSize - 1, devRange[2] + #data - 1), ProgramPageSize do
+  for addr = devRange[1], math.min(DeviceSize - 1, devRange[2] - 1, devRange[1] + #data), ProgramPageSize do
     doWriteEnableDisable(devFD, true)             -- Enable writing
 
     if addr // MB ~= prevMB then
@@ -227,7 +227,7 @@ function doWrite()
     status = waitIdle(devFD)
 
     if (status & anyError) ~= 0 then
-      print(string.format('Program operation terminated in error status %02X', status))
+      print(string.format('\nProgram operation terminated in error status %02X', status))
       break
     end
   end
@@ -273,8 +273,8 @@ function doVerify()
         local fileByte = fileBuf:sub(k, k):byte()
 
         if devByte ~= fileByte then
-          io.stderr:write(string.format('Device verify mismatch at 0x%X: was 0x%02X, should be 0x%02X\n',
-              addr - devRange[1] + k - 1, devByte, fileByte))
+          io.stderr:write(string.format('\nDevice verify mismatch at 0x%X: was 0x%02X, should be 0x%02X\n',
+              addr, devByte, fileByte))
           os.exit(false, true)
         end
       end
