@@ -142,3 +142,15 @@ chip select number to drive the `SPICS#` signal to select the device
 for operations. In my case `/dev/spidev0.0` is for the main (and
 likely only) SPI controller on my Raspberry Pi 4B or Raspberry Pi 0W
 and to use the `SPI0 CE0` GPIO as the chip select for the chip.
+
+# Conclusion
+I used this project to learn Lua and to build a useful tool. It's
+_way_ faster than using `flashrom` to do the equivalent operations,
+but it is also more limited in that it cannot support basically any
+flash device you find lying on the ground somewhere. It _can_ operate
+on a portion of the device, which for some reason `flashrom` seems
+determined to make impossible or at least very difficult. And did I
+mention it's way faster (especially on a Raspberry Pi 4B)?
+
+This program may be very buggy. I have just gotten it working. It
+needs a lot more testing.
