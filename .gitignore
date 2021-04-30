@@ -1,0 +1,7 @@
+spi0
+doc/
+*~
+.*~
+spiops.o
+spiops.so
+dumps/
