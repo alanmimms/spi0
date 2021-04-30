@@ -61,12 +61,11 @@ static int doCommand(lua_State *L) {
   const void *txBuf = lua_tolstring(L, 2, &txLen);
   size_t rxLen = lua_tointeger(L, 3);
 
-  u8 *rxBuf = malloc(rxLen + 1);
+  u8 *rxBuf = calloc(rxLen + 1, 1);
   int st;
 
   if (!rxBuf) luaL_error(L, "doCommand failed to allocate space for requested rx length");
 
-  rxBuf[rxLen] = 0;             /* Really need ending NUL byte? */
   bzero(msg, sizeof(msg));
   msg[0].tx_buf = (u64) txBuf;
   msg[0].len = txLen;
@@ -127,6 +126,15 @@ static int setSpeed(lua_State *L) {
 }
 
 
+static int usSleep(lua_State *L) {
+  int n = lua_gettop(L);
+  if (n != 1) luaL_error(L, "msSleep requires exactly one parameters: integer usToSleep");
+  useconds_t us = lua_tointeger(L, 1);
+  usleep(us);
+  return 0;
+}
+
+
 static const struct luaL_Reg spiops[] = {
   {"doOpen", doOpen},           /* doOpen(pathNameToOpen) returns file handle for subsequent calls */
   {"doClose", doClose},         /* doClose(fileHandle) */
@@ -135,6 +143,7 @@ static const struct luaL_Reg spiops[] = {
   {"setEndian", setEndian},     /* setEndian(fileHandle, lsbFirstBoolean) */
   {"setBPW", setBPW},           /* setBPW(fileHandle, bitsPerWord) */
   {"setSpeed", setSpeed},       /* setSpeed(fileHandle, spiBusSpeedInHz) */
+  {"usSleep", usSleep},         /* usSleep(timeToSleepInUS) */
   {NULL, NULL},                 /* End of list */
 };
 
