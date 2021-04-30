@@ -20,7 +20,9 @@ without sudo while logged in as username `ubuntu`.
     newgrp spi
 ```
 
-Install lua, its runtime library for building the SPIOPS C extension, and the C program building tools.
+Install lua, its runtime library for building the SPIOPS C extension,
+and the C program building tools.
+
 ```
     sudo apt install lua5.3 lib5.3-dev build-essential
 ```
@@ -58,6 +60,18 @@ on a breadboard or with wire jumpers. I plugged the socket into a
 small solderless breadboard to make the connections from the Raspberry
 Pi to the chip easily and so I could introduce the pullups and
 decoupling capacitors.
+
+A _really_ useful tool is a "chip sucker", or vacuum pen pickup tool.
+Small package chips are really hard to pick up without bending or
+damaging their pins - especially from a test socket since the chip
+needs to be pulled straight up. I used "Jiayouy 2-Piece Vacuum Pen
+Pickup Tool Set for IC SMD Precision Component Placement with
+Interchangeable Tips and Cups" ordered from Amazon.com. It's not
+_wonderful_, but it works fine. Don't depend on the suction to hold
+for more than a few seconds. I think this may be caused by roughness
+in the top of the chip package, but it might be a leak in the tool.
+Anyway, a few seconds is all I need if I'm careful and, well,
+_expeditious_ when moving the chip around.
 
 As shown in the photo, I used an [Adafruit Pi T-Cobbler Plus Kit
 Breakout for 2x20 Raspberry Pi - A+, B+, Pi 2, Pi 3, Pi 4,
@@ -163,3 +177,10 @@ like
 This program may be very buggy. I have just gotten it working. It
 needs a lot more testing. I would like to hear your results if you try
 it.
+
+I'm thinking of ordering a PCB to be built to stick onto the Raspberry
+Pi 40-pin connector and host the socket footprint for some number of
+devices. I plan to hard-wire it for my chip's pinout, but it would be
+simple to change it to match another pinout or a different footprint.
+If I get ambitious I might make rev 2.0 programmable so it could host
+pretty much ANY 3.3V pinout SPI flash chip.
