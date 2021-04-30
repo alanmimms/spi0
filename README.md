@@ -69,8 +69,9 @@ signal integrity.
 ![Raspberry Pi T-Cobbler attached to solderless breadboard with SPI flash chip socket attached](pics/PXL_20210430_195057730.jpg)
 
 Note my solderless breadboard layout includes the pullup resistors (I
-used 5.6K I had on hand) and decoupling capacitors (something like
-10nF and 10uF - also on hand) from Vcc to Ground.
+used 5.6K I had on hand) and decoupling capacitors (also on hand:
+something like 10nF or 100nF and 10uF with at least 6WVDC and beware
+polarity) from Vcc to Ground.
 
 With this setup I can use a 25MHz SPI clock without errors.
 
