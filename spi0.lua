@@ -1,7 +1,6 @@
 #!/usr/bin/env lua
 local JEDEC = require "jedec"
 local SPIOPS = require "spiops"
-local posix = require "posix"
 
 local MHz = 1000*1000
 local SPISpeed = 25*MHz
@@ -13,10 +12,13 @@ local MB = KB*KB
 local READ_ID = 0x9E
 local ENTER_4B_MODE, EXIT_4B_MODE = 0xB7, 0xE9
 local READ_4B = 0x13
-local SECTOR_ERASE = 0xD8
+local SECTOR_ERASE = 0xDC       -- FOUR BYTE version of this command
 local BULK_ERASE = 0xC7         -- This has 0xC7/0x60 in docs - which is it? Both? Either?
+local READ_STATUS = 0x05
 local READ_FLAG_STATUS = 0x70
 local PROGRAM_PAGE_4B = 0x12
+local WRITE_ENABLE = 0x06
+local WRITE_DISABLE = 0x04
 
 
 local DeviceSize = 64*MB
@@ -26,8 +28,16 @@ local SPIChunkSize = 2048
 
 local devFD
 local devInfo = {}
-local devRange
+local fullDevRange = {bot=0, top=DeviceSize}
+local devRange = fullDevRange
 
+local bSTATUS = {
+  writeDisabled = 0x80,
+  bp = 0x5E,
+  nvAtBottom = 0x20,
+  writeEnabled = 0x02,
+  busy = 0x01,
+}
 
 local bFLAG_STATUS = {
   notBusy = 0x80,
@@ -40,7 +50,7 @@ local bFLAG_STATUS = {
   fourByteAddressing = 0x01,
 }
 
-local anyError = bFLAG_STATUS.eraseFailure | bFLAG_STATUS.programFailure | bFLAG_STATUS.protectionError;
+local anyFlagStatusError = bFLAG_STATUS.eraseFailure | bFLAG_STATUS.programFailure | bFLAG_STATUS.protectionError;
 
 
 -- Dump the specified string in hex and ASCII with address offsets in
@@ -138,34 +148,55 @@ function openChecked(f, mode)
 end
 
 
-function doWriteEnableDisable(devFD, enable)
-  local cmd = enable and 0x06 or 0x04
-  SPIOPS.doCommand(devFD, string.pack('>B', cmd), 0)
+function enableWrite(devFD)
+  SPIOPS.doCommand(devFD, string.pack('>B', WRITE_ENABLE), 0)
 end
 
 
-function waitIdle(devFD, sleepTime)
-  repeat
-    if sleepTime then io.write('.') end
-    local statusBuf = SPIOPS.doCommand(devFD, string.pack('>B', READ_FLAG_STATUS), 1)
-    status = statusBuf:byte(1, 1)
---    io.write(string.format(' %02X', status))
+function disableWrite(devFD)
+  SPIOPS.doCommand(devFD, string.pack('>B', WRITE_DISABLE), 0)
+end
 
-    if (status & anyError) ~= 0 then
-      print(string.format('Status indicates error: %02X', status))
+
+function readStatus()
+  local statusBuf = SPIOPS.doCommand(devFD, string.pack('>B', READ_STATUS), 1)
+  return statusBuf:byte(1, 1)
+end
+
+
+function readFlagStatus()
+  local statusBuf = SPIOPS.doCommand(devFD, string.pack('>B', READ_FLAG_STATUS), 1)
+  return statusBuf:byte(1, 1)
+end
+
+
+function waitIdle(devFD, usToWait)
+  local status, flagStatus
+
+  while (true) do
+    status = readStatus()
+    flagStatus = readFlagStatus()
+
+    if (flagStatus & anyFlagStatusError) ~= 0 then
+      print(string.format('FlagStatus register indicates error: %02X', flagStatus))
       break
     end
 
-    if sleepTime then posix.sleep(sleepTime) end
-  until (status & bFLAG_STATUS.notBusy) ~= 0
+    if (status & bSTATUS.busy) == 0 then break end
 
-  return status
+    if usToWait >= 100*1000 then
+      SPIOPS.usSleep(usToWait)
+      io.write('.')
+    end
+  end
+
+  return status, flagStatus
 end
 
 
 -- Return a human readable version of the specified device range.
 function rangeString(range)
-  return string.format('0x%X..0x%X', range[1], range[2])
+  return string.format('0x%X..0x%X', range.bot, range.top)
 end
 
 
@@ -177,9 +208,9 @@ function doRead()
   local addr
 
   io.stdout:setvbuf('no')
-  print("Reading device " .. rangeString(devRange) .. " dumping to file '" .. file .. '"')
+  print(string.format('Reading range %s dumping to file "%s"', rangeString(devRange), file))
 
-  for addr = devRange[1], devRange[2] - 1, SPIChunkSize do
+  for addr = devRange.bot, devRange.top - 1, SPIChunkSize do
 
     if addr // MB ~= prevMB then
       prevMB = addr // MB
@@ -203,15 +234,15 @@ function doWrite()
   local prevMB = -1
   local addr
 
-  local f = openChecked(file, "rb")
-  local data = f:read('a') or usage(msg)
-  f:close()
+  local f = openChecked(file, "rb") or usage(msg)
+  local fileSize = f:seek("end")
+  f:seek("set", 0)              -- Rewind back to start of file
 
   io.stdout:setvbuf('no')
-  print(string.format('Writing device %s from file "%s" (%d bytes)', rangeString(devRange), file, #data))
+  print(string.format('Writing range %s from file "%s" (%d bytes)', rangeString(devRange), file, fileSize))
 
-  for addr = devRange[1], math.min(DeviceSize - 1, devRange[2] - 1, devRange[1] + #data), ProgramPageSize do
-    doWriteEnableDisable(devFD, true)             -- Enable writing
+  for addr = devRange.bot, devRange.top - 1, ProgramPageSize do
+    enableWrite(devFD)
 
     if addr // MB ~= prevMB then
       prevMB = addr // MB
@@ -219,20 +250,21 @@ function doWrite()
       io.write(string.format("%3dMB%s", prevMB, eol))
     end
 
-    -- Note this correctly handles files shorter than a multiple of a
-    -- ProgramPageSize since data:sub() truncates buffer as needed.
-    local chunk = data:sub(addr+1, addr+ProgramPageSize)
-    SPIOPS.doCommand(devFD, string.pack(">BI4", PROGRAM_PAGE_4B, addr) .. chunk, 0)
+    local fileBuf = f:read(ProgramPageSize)
+    if not fileBuf then break end               -- Exit verification loop on EOF
+    local size = #fileBuf
+    SPIOPS.doCommand(devFD, string.pack(">BI4", PROGRAM_PAGE_4B, addr) .. fileBuf, 0)
 
-    status = waitIdle(devFD)
+    local status, flagStatus = waitIdle(devFD, 50)
 
-    if (status & anyError) ~= 0 then
-      print(string.format('\nProgram operation terminated in error status %02X', status))
+    if (flagStatus & anyFlagStatusError) ~= 0 then
+      print(string.format('\nProgram operation terminated in error - Flag Status Reg=%02X', flagStatus))
       break
     end
   end
 
-  doWriteEnableDisable(devFD, false)             -- Disable writing
+  f:close()
+  disableWrite(devFD)
   io.write('\n')
   io.stdout:setvbuf('line')
 end
@@ -246,9 +278,9 @@ function doVerify()
   local addr
 
   io.stdout:setvbuf('no')
-  print(string.format('Verifying device %s against file "%s"', rangeString(devRange), file))
+  print(string.format('Verifying range %s against file "%s"', rangeString(devRange), file))
 
-  for addr = devRange[1], devRange[2] - 1, SPIChunkSize do
+  for addr = devRange.bot, devRange.top - 1, SPIChunkSize do
 
     if addr // MB ~= prevMB then
       prevMB = addr // MB
@@ -256,10 +288,9 @@ function doVerify()
       io.write(string.format("%3dMB%s", prevMB, eol))
     end
 
-    local size = SPIChunkSize
-    local fileBuf = f:read(size)
+    local fileBuf = f:read(SPIChunkSize)
     if not fileBuf then break end               -- Exit verification loop on EOF
-    size = math.min(size, #fileBuf)
+    local size = #fileBuf
     local readBuf = SPIOPS.doCommand(devFD, string.pack(">BI4", READ_4B, addr), size)
 
     -- If fast compare says they are not identical drill down and find
@@ -275,7 +306,6 @@ function doVerify()
         if devByte ~= fileByte then
           io.stderr:write(string.format('\nDevice verify mismatch at 0x%X: was 0x%02X, should be 0x%02X\n',
               addr, devByte, fileByte))
-          os.exit(false, true)
         end
       end
     end
@@ -289,22 +319,22 @@ end
 
 
 function doErase()
-  local status
+  local status, flagStatus
 
-  doWriteEnableDisable(devFD, true)             -- Enable writing
+  enableWrite(devFD)
   io.stdout:setvbuf('no')
 
-  if devRange[2] - devRange[1] == DeviceSize then
+  if devRange.top - devRange.bot == DeviceSize then
+    print('Erasing entire device')
     SPIOPS.doCommand(devFD, string.pack('>B', BULK_ERASE), 0)        -- Start bulk erase operation
-    io.write('Erasing entire device')
-    status = waitIdle(devFD, 2)
+    status, flagStatus = waitIdle(devFD, 500*1000)
   else
     local addr
     local prevMB = -1
 
-    io.write('Erasing range ' .. rangeString(devRange))
+    print('Erasing range ' .. rangeString(devRange))
 
-    for addr = devRange[1], devRange[2] - 1, SectorSize do
+    for addr = devRange.bot, devRange.top - 1, SectorSize do
       if addr // MB ~= prevMB then
         prevMB = addr // MB
         local eol = (prevMB % 16 == 15) and '\n' or ''
@@ -312,15 +342,20 @@ function doErase()
       end
 
       SPIOPS.doCommand(devFD, string.pack('>BI4', SECTOR_ERASE, addr), 0)        -- Start sector erase operation
-      status = waitIdle(devFD, 2)
+      status, flagStatus = waitIdle(devFD, 50)
+      print(string.format('status=%02X flagStatus=%02X', status, flagStatus))
+
+      if (flagStatus & anyFlagStatusError) ~= 0 then
+        print(string.format('ERROR: status=%02X flagStatus=%02X', status, flagStatus))
+        os.exit(false, true)
+      end
     end
   end
 
-  -- Disable writing again
-  doWriteEnableDisable(devFD, false)
+  disableWrite(devFD)
   io.write('\n')
   io.stdout:setvbuf('line')
-  print(string.format('Ending status flag register=%02X (i.e., success)', status))
+  print(string.format('Ending Flag Status Reg=%02X (i.e., success)', flagStatus))
 end
 
 
@@ -365,7 +400,7 @@ function setupDevice()
     usage('Extended Device Data says sector size is not uniform 64K which is all this program supports right now.')
   end
 
-  devRange = {0, DeviceSize - 1}
+  devRange = fullDevRange
 end
 
 
@@ -400,7 +435,7 @@ end
 -- we have no additional parameters to gobble and check.
 function doRange(range)
   if range == 'all' then
-    devRange = {0, DeviceSize}
+    devRange = fullDevRange
     return devRange
   end
 
@@ -416,7 +451,7 @@ function doRange(range)
     (op == '..') and (math.min(DeviceSize, fixRangeSize(endString))) or
     usage('Unrecognized syntax for range "' .. range .. '"')
 
-  devRange = {base, top}
+  devRange = {bot=base, top=top}
   return devRange
 end
 
