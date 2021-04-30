@@ -69,8 +69,12 @@ static int doCommand(lua_State *L) {
   bzero(msg, sizeof(msg));
   msg[0].tx_buf = (u64) txBuf;
   msg[0].len = txLen;
+  msg[0].delay_usecs = 2;
+  msg[0].word_delay_usecs = 2;
   msg[1].rx_buf = (u64) rxBuf;
   msg[1].len = rxLen;
+  msg[1].delay_usecs = 2;
+  msg[1].word_delay_usecs = 2;
 
   st = ioctl(fd, rxLen == 0 ? SPI_IOC_MESSAGE(1) : SPI_IOC_MESSAGE(2), msg);
   if (st < 0) luaL_error(L, "bad ioctl() return status from SPI operation");
