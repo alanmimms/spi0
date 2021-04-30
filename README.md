@@ -47,9 +47,9 @@ connected like so:
 | CLK | SPI0 SCLK (23) | C (16) |
 | CE# | SPI0 CE0 (24) | S# (7) |
 | GND | Ground (25)  | Vss or GND (10) |
-| ~5K pullup to Vdd | none | HOLD# (1) |
-| ~5K pullup to Vdd | none | RESET# (3) |
-| ~5K pullup to Vdd | none | W# (9) |
+| ~5K pullup to Vcc | none | HOLD# (1) |
+| ~5K pullup to Vcc | none | RESET# (3) |
+| ~5K pullup to Vcc | none | W# (9) |
 
 I used an "ALLSOCKET SOP16-7.5-1.27 SOP16 Package SOIC16 SO16 SOP16 to
 DIP16 Programming Adapter" ordered from Amazon.com to hold my flash
