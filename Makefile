@@ -7,6 +7,8 @@ TARGETS = spiops.so
 OBJS = spiops.o
 
 all:	$(TARGETS)
+	chmod 755 spi0.lua
+	ln -sf spi0.lua spi0
 
 spiops.o:	spiops.c
 	$(CC) $(CFLAGS) $(DEBUGFLAGS) $(DEBUGCFLAGS) -c -o $@ $^
