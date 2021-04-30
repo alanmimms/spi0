@@ -59,12 +59,11 @@ small solderless breadboard to make the connections from the Raspberry
 Pi to the chip easily and so I could introduce the pullups and
 decoupling capacitors.
 
-As shown in the photo, I used an [Adafruit Pi T-Cobbler Plus GPIO
-breakout
-board](https://www.adafruit.com/product/2028?gclid=Cj0KCQjw1a6EBhC0ARIsAOiTkrH6D3qvxtPNJfqzyV0hTqGdaxXUhkRU14rMwLCQlZS6TE12sQti9rUaAhjpEALw_wcB)
-to plug into the Raspberry Pi's 40-pin header, but you could wire
-directly to the Pi if you prefer and it would probably have better
-signal integrity.
+As shown in the photo, I used an [Adafruit Pi T-Cobbler Plus Kit
+Breakout for 2x20 Raspberry Pi - A+, B+, Pi 2, Pi 3, Pi 4,
+Zero](https://www.adafruit.com/product/1989) to plug into the
+Raspberry Pi's 40-pin header, but you could wire directly to the Pi if
+you prefer and it would probably have better signal integrity.
 
 ![Raspberry Pi T-Cobbler attached to solderless breadboard with SPI flash chip socket attached](pics/PXL_20210430_195057730.jpg)
 
@@ -152,5 +151,15 @@ on a portion of the device, which for some reason `flashrom` seems
 determined to make impossible or at least very difficult. And did I
 mention it's way faster (especially on a Raspberry Pi 4B)?
 
+I strongly urge you to use `sha256sum` or similar to verify the hash
+of your data and to use commands that erase, write, and then verify
+like
+
+```
+    /spi0 /dev/spidev0.0 erase write full.image verify full.image
+```
+
+# **IMPORTANT ANNOUNCEMENT**:
 This program may be very buggy. I have just gotten it working. It
-needs a lot more testing.
+needs a lot more testing. I would like to hear your results if you try
+it.
