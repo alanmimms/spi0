@@ -178,9 +178,10 @@ This program may be very buggy. I have just gotten it working. It
 needs a lot more testing. I would like to hear your results if you try
 it.
 
-I'm thinking of ordering a PCB to be built to stick onto the Raspberry
-Pi 40-pin connector and host the socket footprint for some number of
-devices. I plan to hard-wire it for my chip's pinout, but it would be
-simple to change it to match another pinout or a different footprint.
-If I get ambitious I might make rev 2.0 programmable so it could host
-pretty much ANY 3.3V pinout SPI flash chip.
+I have designed and ordered a PCB using EasyEDA and JLCPCB to stick
+onto the Raspberry Pi 40-pin connector and host the socket footprint
+for the SO-16 I use. I hard-wired it for my chip's pinout, but it
+would be simple to change it to match another pinout or a different
+footprint. If I get ambitious I might make rev 2.0 programmable so it
+could host pretty much ANY 3.3V pinout SPI flash chip. Let me know if
+you want a copy of this.
