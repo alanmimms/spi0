@@ -10,6 +10,7 @@ local MB = KB*KB
 
 -- MT25QL512ABB8ESF-0SIT specific?
 local READ_ID = 0x9F
+local READ_SFDP = 0x5A
 local ENTER_4B_MODE, EXIT_4B_MODE = 0xB7, 0xE9
 local READ_4B = 0x13
 local BLOCK_ERASE = 0xDC       -- FOUR BYTE version of this command
@@ -89,7 +90,11 @@ function usage(msg)
   io.stderr:write([[
 Usage:
   `spi0` device ( [{bottom`..`top | base`+`size | `all`}]
-                  {`read` [file] | `verify` [file] | `write` [file] | `erase`} )+
+                  {`read` [file] |
+                   `verify` [file] |
+                   `write` [file] |
+                   `erase`,
+                   `sfdp`} )+
 
 device (e.g., /dev/spidev0.0) must be specified.
 
@@ -114,6 +119,9 @@ the range extends to the end of the device.
 
 Any number of operations can be specified. All operations do only what
 they say. You must usually erase and region before you can write it.
+
+The `sfdp` operation reads the device's JEDEC "Serial Flash
+Discoverable Parameter" region and dumps (512 bytes of) it.
 
 For example:
 
@@ -392,8 +400,9 @@ function setupDevice()
   devInfo.mfgString = manufacturers[devInfo.mfg] or '?'
   devInfo.typeString = types[devInfo.type] or '?'
   devInfo.capString = capacities[devInfo.cap] or '?'
-  print(string.format("Read ID: Manufacturer=%02X(%s) type=%02X(%s) capacity=%02X(%sMB)",
-      devInfo.mfg, devInfo.mfgString, devInfo.type, devInfo.typeString, devInfo.cap, devInfo.capString))
+  devInfo.capMbString = (capacities[devInfo.cap] or 0) * 8
+  print(string.format("Read ID: Manufacturer=%02X(%s) type=%02X(%s) capacity=%02X(%sMB=%sMb)",
+      devInfo.mfg, devInfo.mfgString, devInfo.type, devInfo.typeString, devInfo.cap, devInfo.capString, devInfo.capMbString))
   hexDump(readIDBuf)
 
   if (readIDBuf:byte(5) & 0x03) ~= 0x00 then
@@ -456,6 +465,13 @@ function doRange(range)
 end
 
 
+function doSFDP()
+  local sfdpBuf = SPIOPS.doCommand(devFD, string.pack('>BI4', READ_SFDP, 0), 512)
+  print('SFDP data:')
+  hexDump(sfdpBuf)
+
+end
+
 
 setupDevice()
 
@@ -471,6 +487,7 @@ while true do
       write = doWrite,
       erase = doErase,
       verify = doVerify,
+      sfdp = doSFDP,
       default = doRange,
   })
 end
