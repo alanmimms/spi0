@@ -9,10 +9,10 @@ local KB = 1024
 local MB = KB*KB
 
 -- MT25QL512ABB8ESF-0SIT specific?
-local READ_ID = 0x9E
+local READ_ID = 0x9F
 local ENTER_4B_MODE, EXIT_4B_MODE = 0xB7, 0xE9
 local READ_4B = 0x13
-local SECTOR_ERASE = 0xDC       -- FOUR BYTE version of this command
+local BLOCK_ERASE = 0xDC       -- FOUR BYTE version of this command
 local BULK_ERASE = 0xC7         -- This has 0xC7/0x60 in docs - which is it? Both? Either?
 local READ_STATUS = 0x05
 local READ_FLAG_STATUS = 0x70
@@ -22,7 +22,7 @@ local WRITE_DISABLE = 0x04
 
 
 local DeviceSize = 64*MB
-local SectorSize = 64*KB
+local BlockSize = 64*KB
 local ProgramPageSize = 256
 local SPIChunkSize = 2048
 
@@ -334,14 +334,14 @@ function doErase()
 
     print('Erasing range ' .. rangeString(devRange))
 
-    for addr = devRange.bot, devRange.top - 1, SectorSize do
+    for addr = devRange.bot, devRange.top - 1, BlockSize do
       if addr // MB ~= prevMB then
         prevMB = addr // MB
         local eol = (prevMB % 16 == 15) and '\n' or ''
         io.write(string.format("%3dMB%s", prevMB, eol))
       end
 
-      SPIOPS.doCommand(devFD, string.pack('>BI4', SECTOR_ERASE, addr), 0)        -- Start sector erase operation
+      SPIOPS.doCommand(devFD, string.pack('>BI4', BLOCK_ERASE, addr), 0)        -- Start block erase operation
       status, flagStatus = waitIdle(devFD, 50)
       print(string.format('status=%02X flagStatus=%02X', status, flagStatus))
 
@@ -397,7 +397,7 @@ function setupDevice()
   hexDump(readIDBuf)
 
   if (readIDBuf:byte(5) & 0x03) ~= 0x00 then
-    usage('Extended Device Data says sector size is not uniform 64K which is all this program supports right now.')
+    usage('Extended Device Data says block size is not uniform 64K which is all this program supports right now.')
   end
 
   devRange = fullDevRange
