@@ -379,30 +379,33 @@ function setupDevice()
 
   local manufacturers = {
     [0x20] = 'Micron',
+    [0xC2] = 'Macronix',
   }
 
-  local types = {
-    [0xBA] = '3V',
-    [0xBB] = '1.8V',
+  local mfgTypes = {
+    [0x201A] = 'MX25L51245G 3V 512Mb',
+    [0xBA22] = '3V 2Gb',
+    [0xBA21] = '3V 1Gb',
+    [0xBA20] = '3V 512Mb',
+    [0xBA19] = '3V 256Mb',
+    [0xBA18] = '3V 128Mb',
+    [0xBA17] = '3V 64Mb',
+    [0xBB22] = '1.8V 2Gb',
+    [0xBB21] = '1.8V 1Gb',
+    [0xBB20] = '1.8V 512Mb',
+    [0xBB19] = '1.8V 256Mb',
+    [0xBB18] = '1.8V 128Mb',
+    [0xBB17] = '1.8V 64Mb',
   }
-
-  local capacities = {
-    [0x22] = 2048 // 8,
-    [0x21] = 1024 // 8,
-    [0x20] = 512 // 8,
-    [0x19] = 256 // 8,
-    [0x18] = 128 // 8,
-    [0x17] = 64 // 8,
-  }
-
+  
   local readIDBuf = SPIOPS.doCommand(devFD, string.pack('>B', READ_ID), 20)
-  devInfo.mfg, devInfo.type, devInfo.cap = readIDBuf:byte(1, 3)
+  local typeMSB, typeLSB
+  devInfo.mfg, typeMSB, typeLSB = readIDBuf:byte(1, 3)
   devInfo.mfgString = manufacturers[devInfo.mfg] or '?'
-  devInfo.typeString = types[devInfo.type] or '?'
-  devInfo.capString = capacities[devInfo.cap] or '?'
-  devInfo.capMbString = (capacities[devInfo.cap] or 0) * 8
-  print(string.format("Read ID: Manufacturer=%02X(%s) type=%02X(%s) capacity=%02X(%sMB=%sMb)",
-      devInfo.mfg, devInfo.mfgString, devInfo.type, devInfo.typeString, devInfo.cap, devInfo.capString, devInfo.capMbString))
+  devInfo.mfgType = (typeMSB << 8) | typeLSB
+  devInfo.mfgTypeString = mfgTypes[devInfo.mfgType] or '?'
+  print(string.format("Read ID: Manufacturer='%s'(%02X) type='%s'(%04X)",
+      devInfo.mfgString, devInfo.mfg, devInfo.mfgTypeString, devInfo.mfgType))
   hexDump(readIDBuf)
 
   if (readIDBuf:byte(5) & 0x03) ~= 0x00 then
