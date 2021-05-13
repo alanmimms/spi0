@@ -5,3 +5,4 @@ doc/
 spiops.o
 spiops.so
 dumps/
+kaitai_struct_*
